@@ -233,6 +233,20 @@ QPushButton#fixBtn:hover {
     border-color: #fdd663;
 }
 
+QPushButton#renameBtn {
+    background: transparent;
+    border: none;
+    color: #8e918f;
+    border-radius: 14px;
+    padding: 4px 8px;
+    font-size: 13px;
+}
+
+QPushButton#renameBtn:hover {
+    background-color: rgba(168, 199, 250, 14%);
+    color: #a8c7fa;
+}
+
 QPushButton#deleteBtn {
     background: transparent;
     border: none;
@@ -245,6 +259,27 @@ QPushButton#deleteBtn {
 QPushButton#deleteBtn:hover {
     background-color: rgba(242, 139, 130, 14%);
     color: #f28b82;
+}
+
+QPushButton#cancelBtn {
+    background-color: rgba(242, 139, 130, 10%);
+    border: 1px solid rgba(242, 139, 130, 32%);
+    border-radius: 14px;
+    padding: 7px 12px;
+    color: #f28b82;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+QPushButton#cancelBtn:hover {
+    background-color: rgba(242, 139, 130, 20%);
+    border-color: #f28b82;
+}
+
+QPushButton#cancelBtn:disabled {
+    background-color: transparent;
+    border-color: #303134;
+    color: #5f6368;
 }
 
 QPushButton#stateBtn {

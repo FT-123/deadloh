@@ -1,11 +1,15 @@
 import re
 from pathlib import Path
-from .constants import HERO_MAP
+
+from .constants import HERO_ALIASES, HERO_MAP
 
 try:
     import vpk
 except ImportError:
     vpk = None
+
+# Официальные имена + внутренние алиасы: в VPK встречаются legacy-папки.
+_HERO_TAGS = tuple({**HERO_ALIASES, **HERO_MAP}.items())
 
 
 def analyze_vpk(file_path: Path) -> dict:
@@ -24,7 +28,7 @@ def analyze_vpk(file_path: Path) -> dict:
     for entry in pak:
         low = entry.lower().replace("\\", "/")
 
-        for key, display_name in HERO_MAP.items():
+        for key, display_name in _HERO_TAGS:
             if re.search(rf"(?:^|[_\/]){re.escape(key)}(?:[_\/]|\.|$)", low):
                 detected_heroes.add(display_name)
 

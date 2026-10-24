@@ -90,8 +90,8 @@ def _patch_modules(staging: Path, game: Path):
     """Подменяет пути и сетевые вызовы до создания окон."""
     import ui.gamebanana_window as gbw
     import ui.main_window as mw
-    import ui.widgets as widgets
     from core.gamebanana import GBFile, GBMod
+    from ui import widgets
 
     mw.STAGING_DIR = staging
     widgets.STAGING_DIR = staging

@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
     QListView,
     QListWidget,
     QListWidgetItem,
+    QProgressBar,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -44,6 +45,8 @@ from core.archiver import extract_and_stage_archive, stage_vpk_file
 from core.constants import HEROES
 from core.gamebanana import (
     POPULAR_SCAN_PERPAGE,
+    DownloadCancelled,
+    DownloadCancelToken,
     GBMod,
     download_file_bytes,
     download_image_bytes,
@@ -58,6 +61,18 @@ from .styles import apply_dark_titlebar, load_stylesheet
 THUMB_SIZE = QSize(170, 100)
 DETAIL_IMAGE_SIZE = QSize(296, 180)
 GB_CHARACTER_ALL = "Все персонажи"
+
+
+def _stop_worker(worker: QThread | None, wait_ms: int = 2000) -> None:
+    """Останавливает поток с ограничением ожидания, чтобы выход не зависал."""
+    if worker is None or not worker.isRunning():
+        return
+    stop = getattr(worker, "stop", None)
+    if callable(stop):
+        stop()
+    if not worker.wait(wait_ms):
+        worker.terminate()
+        worker.wait(500)
 
 
 class GBSearchWorker(QThread):
@@ -84,12 +99,18 @@ class GBDownloadWorker(QThread):
 
     download_finished = Signal(str, str, str)
     download_error = Signal(str)
+    download_cancelled = Signal()
     progress_changed = Signal(int, int)  # (получено байт, всего байт; 0 — размер неизвестен)
 
     def __init__(self, mod_id: int, file_id: int | None = None):
         super().__init__()
         self.mod_id = mod_id
         self.file_id = file_id
+        self._cancel_token = DownloadCancelToken()
+
+    def cancel(self) -> None:
+        """Прерывает скачивание (можно вызывать из GUI-потока)."""
+        self._cancel_token.cancel()
 
     def _on_download_progress(self, received: int, total: int) -> None:
         """Пересылает прогресс скачивания в главное окно."""
@@ -101,9 +122,17 @@ class GBDownloadWorker(QThread):
                 self.mod_id,
                 self.file_id,
                 progress_callback=self._on_download_progress,
+                cancel_token=self._cancel_token,
             )
+        except DownloadCancelled:
+            self.download_cancelled.emit()
+            return
         except Exception as exc:  # noqa: BLE001 — сообщение об ошибке уходит в UI
             self.download_error.emit(str(exc))
+            return
+
+        if self._cancel_token.cancelled:
+            self.download_cancelled.emit()
             return
 
         staged_folder = None
@@ -396,6 +425,20 @@ class GameBananaWindow(QDialog):
         self.btn_gb_download.setEnabled(False)
         layout.addWidget(self.btn_gb_download)
 
+        self.gb_download_progress = QProgressBar()
+        self.gb_download_progress.setObjectName("gbDownloadProgress")
+        self.gb_download_progress.setFixedHeight(6)
+        self.gb_download_progress.setTextVisible(False)
+        self.gb_download_progress.setRange(0, 0)
+        self.gb_download_progress.setVisible(False)
+        layout.addWidget(self.gb_download_progress)
+
+        self.btn_gb_cancel_download = QPushButton("✕ Прервать скачивание")
+        self.btn_gb_cancel_download.setObjectName("cancelBtn")
+        self.btn_gb_cancel_download.setCursor(Qt.PointingHandCursor)
+        self.btn_gb_cancel_download.setVisible(False)
+        layout.addWidget(self.btn_gb_cancel_download)
+
         self.btn_gb_open = QPushButton("🌐 Открыть на GameBanana")
         self.btn_gb_open.setObjectName("ghostBtn")
         self.btn_gb_open.setCursor(Qt.PointingHandCursor)
@@ -458,6 +501,7 @@ class GameBananaWindow(QDialog):
         self.gb_gallery.itemClicked.connect(self._on_item_clicked)
         self.gb_gallery.itemDoubleClicked.connect(self._on_item_double_clicked)
         self.btn_gb_download.clicked.connect(self.start_download)
+        self.btn_gb_cancel_download.clicked.connect(self._cancel_download)
         self.btn_gb_open.clicked.connect(self._open_profile)
         self.btn_gb_close.clicked.connect(self.close)
         self.btn_gb_prev.clicked.connect(self._prev_page)
@@ -488,11 +532,37 @@ class GameBananaWindow(QDialog):
     def set_downloading(self) -> None:
         """Показывает, что идёт скачивание выбранного мода."""
         self.btn_gb_download.setEnabled(False)
+        self._set_download_active(True)
         if self.gb_current_mod is not None:
             self.gb_status.setText(f"⬇ Скачивание «{self.gb_current_mod.name}»…")
 
+    def _set_download_active(self, active: bool) -> None:
+        """Показывает/скрывает прогресс и кнопку прерывания скачивания."""
+        self.gb_download_progress.setVisible(active)
+        self.btn_gb_cancel_download.setVisible(active)
+        self.btn_gb_cancel_download.setEnabled(active)
+        if active:
+            self.gb_download_progress.setRange(0, 0)
+            self.gb_download_progress.setValue(0)
+
+    def _cancel_download(self) -> None:
+        """Просит главное окно прервать текущее скачивание."""
+        cancel = getattr(self.manager, "cancel_gb_download", None)
+        if callable(cancel) and cancel():
+            self.btn_gb_cancel_download.setEnabled(False)
+            self.gb_status.setText("⏹ Прерываем скачивание…")
+
+    def on_download_progress(self, received: int, total: int) -> None:
+        """Обновляет прогресс-бар в карточке мода (total == 0 — размер неизвестен)."""
+        if total > 0:
+            self.gb_download_progress.setRange(0, total)
+            self.gb_download_progress.setValue(min(received, total))
+        else:
+            self.gb_download_progress.setRange(0, 0)
+
     def on_download_finished(self, mod_name: str, file_name: str) -> None:
         """Сообщает об успешном скачивании и добавлении мода в библиотеку."""
+        self._set_download_active(False)
         self.btn_gb_download.setEnabled(self.gb_current_mod is not None)
         self.gb_status.setText(
             f"✅ «{mod_name}» скачан и добавлен в библиотеку ({file_name})"
@@ -500,8 +570,15 @@ class GameBananaWindow(QDialog):
 
     def on_download_error(self, message: str) -> None:
         """Сообщает об ошибке скачивания мода."""
+        self._set_download_active(False)
         self.btn_gb_download.setEnabled(self.gb_current_mod is not None)
         self.gb_status.setText(f"❌ Не удалось скачать мод: {message}")
+
+    def on_download_cancelled(self) -> None:
+        """Сообщает, что скачивание прервано пользователем."""
+        self._set_download_active(False)
+        self.btn_gb_download.setEnabled(self.gb_current_mod is not None)
+        self.gb_status.setText("⏹ Скачивание прервано")
 
     def set_results(self, mods: list[GBMod]) -> None:
         """Заполняет браузер результатами поиска (с пагинацией)."""
@@ -866,8 +943,9 @@ class GameBananaWindow(QDialog):
             if loader.isRunning():
                 if wait_forever:
                     loader.wait()
-                else:
-                    loader.wait(1500)
+                elif not loader.wait(1500):
+                    loader.terminate()
+                    loader.wait(500)
 
     def _stop_large_loader(self, wait_forever: bool = False) -> None:
         loader = self._large_loader
@@ -877,8 +955,9 @@ class GameBananaWindow(QDialog):
             if loader.isRunning():
                 if wait_forever:
                     loader.wait()
-                else:
-                    loader.wait(1500)
+                elif not loader.wait(1500):
+                    loader.terminate()
+                    loader.wait(500)
 
     def _on_image_loaded(
         self,
@@ -950,14 +1029,12 @@ class GameBananaWindow(QDialog):
 
     def shutdown(self) -> None:
         """Останавливает все фоновые потоки окна (вызывается при выходе из приложения)."""
-        self._stop_image_loader(wait_forever=True)
-        self._stop_large_loader(wait_forever=True)
+        self._stop_image_loader()
+        self._stop_large_loader()
         for worker in list(self._info_workers):
-            if worker.isRunning():
-                worker.wait()
+            _stop_worker(worker)
         self._info_workers.clear()
-        if self._popular_page_worker is not None and self._popular_page_worker.isRunning():
-            self._popular_page_worker.wait()
+        _stop_worker(self._popular_page_worker)
         self._popular_page_worker = None
 
     def closeEvent(self, event) -> None:

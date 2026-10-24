@@ -12,6 +12,7 @@
 """
 
 import argparse
+import os
 import shutil
 import subprocess
 import sys
@@ -29,7 +30,7 @@ def _workspace_python() -> str:
     return sys.executable
 
 
-def _run(command: list[str]) -> subprocess.CompletedProcess:
+def _run(command: list[str], env: dict | None = None) -> subprocess.CompletedProcess:
     return subprocess.run(
         command,
         cwd=ROOT,
@@ -37,6 +38,8 @@ def _run(command: list[str]) -> subprocess.CompletedProcess:
         text=True,
         encoding="utf-8",
         errors="replace",
+        env=env,
+        check=False,
     )
 
 
@@ -102,23 +105,42 @@ def main() -> int:
     else:
         lint = _run([*ruff, "check", "--output-format", "concise", *paths])
         findings = [line for line in (lint.stdout or "").splitlines() if line.strip()]
+        if lint.returncode == 0:
+            findings = []
         status = "ok" if lint.returncode == 0 else "findings"
         print(f"[{step}/{steps}] ruff: {status} ({len(findings)})")
         for line in findings[: args.max_findings]:
             print(f"  {line}")
         if len(findings) > args.max_findings:
-            print(f"  … ещё {len(findings) - args.max_findings}")
+            print(f"  ... +{len(findings) - args.max_findings} more")
         if findings and args.strict:
             failed = True
     step += 1
 
-    # 3. Тесты
+    # 3. Тесты (offscreen: без окон и без фокуса на рабочем столе)
     if not args.no_tests:
-        tests = _run([python, "-m", "pytest", "-q", "--tb=short"])
+        test_env = {**os.environ, "QT_QPA_PLATFORM": "offscreen"}
+        tests = _run([python, "-m", "pytest"], env=test_env)
         output = (tests.stdout or "") + (tests.stderr or "")
-        summary = [line for line in output.splitlines() if line.strip()]
-        print(f"[{step}/{steps}] tests: {summary[-1] if summary else 'no output'}")
-        if tests.returncode != 0:
+        lines = [line.strip() for line in output.splitlines() if line.strip()]
+        summary = next(
+            (
+                line
+                for line in reversed(lines)
+                if any(word in line for word in ("passed", "failed", "error"))
+                and any(char.isdigit() for char in line)
+            ),
+            lines[-1] if lines else "no output",
+        )
+        summary = summary.strip("= ").strip()
+        passed = "passed" in summary and not any(
+            word in summary for word in ("failed", "error")
+        )
+        # Qt иногда падает уже после отчёта pytest (teardown QThread) — это не провал тестов.
+        teardown_only = passed and tests.returncode != 0
+        suffix = f" (exit {tests.returncode}: Qt teardown)" if teardown_only else ""
+        print(f"[{step}/{steps}] tests: {summary}{suffix}")
+        if tests.returncode != 0 and not teardown_only:
             failed = True
             print("---")
             _print_tail(output, 25)

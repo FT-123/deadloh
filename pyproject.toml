@@ -1,7 +1,7 @@
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
-addopts = "-q --tb=short"
+addopts = "--tb=short"
 
 [tool.ruff]
 # Краткий формат экономит контекст при чтении отчётов агентом.

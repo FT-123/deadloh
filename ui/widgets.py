@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QGraphicsOpacityEffect,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QListWidget,
     QMessageBox,
@@ -398,6 +399,15 @@ class ModCardWidget(QFrame):
         name = meta.get("name")
         if not isinstance(name, str) or not name.strip():
             name = folder_name
+        # Пользовательское название хранится отдельно: папка мода и content.vpk
+        # остаются нетронутыми, поэтому деплой и игра продолжают работать.
+        custom_name = meta.get("display_name")
+        if isinstance(custom_name, str) and custom_name.strip():
+            display_name = custom_name.strip()
+        else:
+            display_name = clean_display_name(name)
+        self.raw_name = name
+        self.display_name = display_name
         self.enabled = meta.get("enabled", True)
         if not isinstance(self.enabled, bool):
             self.enabled = True
@@ -418,8 +428,9 @@ class ModCardWidget(QFrame):
         # 2. Название
         title_box = QVBoxLayout()
         title_box.setSpacing(2)
-        self.lbl_title = ElidedLabel(clean_display_name(name))
+        self.lbl_title = ElidedLabel(display_name)
         self.lbl_title.setStyleSheet("font-size: 14px; font-weight: 600; color: #e3e3e3;")
+        self.lbl_title.setToolTip(display_name)
         title_box.addWidget(self.lbl_title)
 
         self.lbl_sub = QLabel(f"Архив: {name}")
@@ -469,7 +480,18 @@ class ModCardWidget(QFrame):
         layout.addWidget(self.tags_container, 0, Qt.AlignmentFlag.AlignVCenter)
         self.tags_container.setVisible(bool(heroes or types))
 
-        # 6. Удаление
+        # 6. Переименование (меняет только подпись в менеджере)
+        btn_rename = QPushButton("✏")
+        btn_rename.setObjectName("renameBtn")
+        btn_rename.setToolTip(
+            "Переименовать мод в менеджере. Папка мода, content.vpk и файлы в игре "
+            "остаются прежними — деплой не ломается."
+        )
+        btn_rename.setCursor(Qt.PointingHandCursor)
+        btn_rename.clicked.connect(self.on_rename)
+        layout.addWidget(btn_rename, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        # 7. Удаление
         btn_del = QPushButton("✕")
         btn_del.setObjectName("deleteBtn")
         btn_del.setToolTip("Удалить мод")
@@ -627,10 +649,59 @@ class ModCardWidget(QFrame):
         self.update_card_appearance(checked)
         self.manager.update_mod_counter()
 
+    def on_rename(self):
+        """Меняет только отображаемое название в meta.json (папка и VPK целы)."""
+        new_name, accepted = QInputDialog.getText(
+            self,
+            "Переименование мода",
+            "Название в менеджере (папка мода и VPK не меняются):",
+            text=self.display_name,
+        )
+        if not accepted:
+            return
+
+        new_name = " ".join(str(new_name).split())
+        if not new_name:
+            self.manager.notify("Название не может быть пустым")
+            return
+        if len(new_name) > 80:
+            new_name = new_name[:80].rstrip()
+        if new_name == self.display_name:
+            return
+
+        meta_file = STAGING_DIR / self.folder_name / "meta.json"
+        try:
+            meta = json.loads(meta_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            self.manager.notify("Не удалось прочитать meta.json мода")
+            return
+        if not isinstance(meta, dict):
+            meta = {}
+
+        # Если вернули автоматическое имя — убираем пользовательское поле.
+        if new_name == clean_display_name(self.raw_name):
+            meta.pop("display_name", None)
+        else:
+            meta["display_name"] = new_name
+
+        try:
+            write_json_atomic(meta_file, meta)
+        except OSError:
+            self.manager.notify("Не удалось сохранить новое название")
+            return
+
+        self.display_name = new_name
+        self.lbl_title.set_full_text(new_name)
+        self.lbl_title.setToolTip(new_name)
+        handler = getattr(self.manager, "on_mod_renamed", None)
+        if callable(handler):
+            handler(self.folder_name, new_name)
+        self.manager.notify("Мод переименован")
+
     def on_delete(self):
         msg = QMessageBox(self)
         msg.setWindowTitle("Удаление")
-        msg.setText(f"Удалить мод «{clean_display_name(self.folder_name)}» из библиотеки?")
+        msg.setText(f"Удалить мод «{self.display_name}» из библиотеки?")
         msg.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
         apply_dark_titlebar(msg)
 

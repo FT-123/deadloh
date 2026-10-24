@@ -1,6 +1,10 @@
 import time
 
+import pytest
+
 from core.gamebanana import (
+    DownloadCancelled,
+    DownloadCancelToken,
     GameBananaError,
     GBFile,
     GBMod,
@@ -367,3 +371,70 @@ def test_search_mods_existing_query_unchanged(monkeypatch):
     assert [m.mod_id for m in mods] == [1]
     # без персонажа строка поиска не меняется (назад-совместимость)
     assert captured["params"]["_sSearchString"] == "gravity"
+
+
+def test_download_is_cancelled_before_start(monkeypatch):
+    token = DownloadCancelToken()
+    token.cancel()
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("сеть не должна вызываться после отмены")
+
+    monkeypatch.setattr("core.gamebanana.get_mod", unexpected)
+    monkeypatch.setattr("core.gamebanana.get_mod_files", unexpected)
+
+    with pytest.raises(DownloadCancelled):
+        download_file_bytes(42, cancel_token=token)
+
+
+def test_download_file_bytes_stops_on_cancel(monkeypatch):
+    token = DownloadCancelToken()
+    progress = []
+
+    class FakeResponse:
+        def __init__(self):
+            self.headers = {"Content-Length": "200000"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self, size=None):
+            token.cancel()  # пользователь нажал «Прервать» во время загрузки
+            return b"A" * 65536
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        "core.gamebanana.urllib.request.urlopen",
+        lambda request, timeout=None: FakeResponse(),
+    )
+    monkeypatch.setattr(
+        "core.gamebanana.get_mod",
+        lambda mod_id: GBMod(mod_id=mod_id, name="Test Mod", downloads=0),
+    )
+    monkeypatch.setattr(
+        "core.gamebanana.get_mod_files",
+        lambda mod_id: [
+            GBFile(
+                file_id=1,
+                name="mod.zip",
+                size=200000,
+                date_added=1,
+                downloads=0,
+                download_url="https://gamebanana.com/dl/1",
+            )
+        ],
+    )
+
+    with pytest.raises(DownloadCancelled):
+        download_file_bytes(
+            42,
+            progress_callback=lambda received, total: progress.append(received),
+            cancel_token=token,
+        )
+
+    assert progress == [65536]

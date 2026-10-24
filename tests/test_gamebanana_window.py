@@ -242,3 +242,32 @@ def test_back_to_popular_item_click_uses_correct_mod(qapp, monkeypatch):
     assert window.gb_current_mod is not None
     assert window.gb_current_mod.mod_id == 100
     window.close()
+
+
+def test_download_progress_and_cancel(qapp):
+    """Прогресс скачивания виден в карточке, кнопка «Прервать» вызывает менеджер."""
+    window = make_shown_window(qapp)
+    wait_for_load(window, qapp)
+    cancelled = []
+    window.manager.cancel_gb_download = lambda: cancelled.append(True) or True
+
+    window.set_downloading()
+    assert window.gb_download_progress.isVisible() is True
+    assert window.btn_gb_cancel_download.isVisible() is True
+
+    window.on_download_progress(50, 100)
+    assert window.gb_download_progress.maximum() == 100
+    assert window.gb_download_progress.value() == 50
+
+    # Неизвестный размер — бегущая полоса.
+    window.on_download_progress(1, 0)
+    assert window.gb_download_progress.maximum() == 0
+
+    window._cancel_download()
+    assert cancelled == [True]
+    assert window.btn_gb_cancel_download.isEnabled() is False
+
+    window.on_download_cancelled()
+    assert window.gb_download_progress.isVisible() is False
+    assert window.btn_gb_cancel_download.isVisible() is False
+    window.close()

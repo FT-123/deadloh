@@ -10,6 +10,14 @@ build/
 dist/
 *.spec
 
+# Agent instructions and tooling (local-only, not for GitHub)
+AGENTS.md
+PROJECT_MAP.md
+.serena/
+.opencode/
+mcp_servers/
+docs/serena_intro.html
+
 # IDE
 .idea/
 
@@ -17,10 +25,6 @@ dist/
 config.json
 deployed_state.json
 staging/
-
-# Serena local data (project.yml stays tracked)
-.serena/cache/
-.serena/project.local.yml
 
 # Local tooling indexes
 .codexray/

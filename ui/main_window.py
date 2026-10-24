@@ -5,6 +5,7 @@ from PySide6.QtCore import QSize, Qt, QThread, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QButtonGroup,
+    QComboBox,
     QFileDialog,
     QHBoxLayout,
     QLabel,
@@ -19,7 +20,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.archiver import extract_and_stage_archive, stage_vpk_file
-from core.constants import DEADLOCK_APP_ID, VALID_EXTS, clean_display_name
+from core.constants import DEADLOCK_APP_ID, HEROES, VALID_EXTS, clean_display_name
 from core.deployer import deploy_active_mods, get_deployed_mods_set
 from core.gameinfo import is_gameinfo_patched, patch_gameinfo_file
 from core.jsonio import write_json_atomic
@@ -42,6 +43,10 @@ from .widgets import (
 
 # Роль элемента списка: состояние карточки для фильтрации.
 FILTER_ROLE = int(Qt.ItemDataRole.UserRole) + 1
+
+# Значения фильтра по персонажу (в combo хранится data, а не текст).
+HERO_FILTER_ALL = ""
+HERO_FILTER_NONE = "__none__"
 
 
 def _has_valid_tags(meta: dict) -> bool:
@@ -273,18 +278,28 @@ class DeadlockModManager(QMainWindow):
 
     def closeEvent(self, event):
         # Не даём Qt уничтожить работающий QThread (это аварийно завершает процесс).
+        download = self.gb_download_worker
+        if download is not None and download.isRunning():
+            download.cancel()
         if self.gb_window is not None:
             self.gb_window.shutdown()
         workers = (
             self.import_worker, self.scan_worker, self.deploy_worker,
             self.heal_worker, self.heal_all_worker, self.tags_worker,
-            self.gb_search_worker, self.gb_download_worker,
+            self.gb_search_worker, download,
         )
         running = [w for w in workers if w and w.isRunning()]
         if running:
             self.statusBar().showMessage("⏳ Завершение текущей операции перед выходом...")
             for worker in running:
-                worker.wait()
+                # Сетевые операции не должны блокировать выход навсегда:
+                # скачивание отменяется, поиск по таймауту, затем поток снимается.
+                if worker is download or worker is self.gb_search_worker:
+                    if not worker.wait(3000):
+                        worker.terminate()
+                        worker.wait(1000)
+                else:
+                    worker.wait()
         super().closeEvent(event)
 
     def _worker_running(self, name: str) -> bool:
@@ -410,6 +425,18 @@ class DeadlockModManager(QMainWindow):
         self.search_input.setPlaceholderText("Поиск по названию, герою или типу мода…")
         self.search_input.textChanged.connect(self.filter_list)
         search_box.addWidget(self.search_input, 1)
+
+        self.hero_combo = QComboBox()
+        self.hero_combo.setObjectName("characterFilter")
+        self.hero_combo.setFixedHeight(46)
+        self.hero_combo.setMinimumWidth(190)
+        self.hero_combo.setCursor(Qt.PointingHandCursor)
+        self.hero_combo.setToolTip("Показать моды выбранного персонажа")
+        self.hero_combo.addItem("Все герои", HERO_FILTER_ALL)
+        self.hero_combo.addItem("Без героя", HERO_FILTER_NONE)
+        self.hero_combo.currentIndexChanged.connect(lambda _index: self.apply_filters())
+        self._hero_filter_values: tuple[str, ...] = ()
+        search_box.addWidget(self.hero_combo)
 
         self.lbl_count = QLabel("0 модов")
         self.lbl_count.setObjectName("mutedLabel")
@@ -587,6 +614,7 @@ class DeadlockModManager(QMainWindow):
         self.gb_download_worker = worker
         worker.download_finished.connect(self.on_gb_download_finished)
         worker.download_error.connect(self.on_gb_download_error)
+        worker.download_cancelled.connect(self.on_gb_download_cancelled)
         worker.progress_changed.connect(self._on_gb_download_progress)
         if self.gb_window is not None:
             self.gb_window.set_downloading()
@@ -612,6 +640,26 @@ class DeadlockModManager(QMainWindow):
             self.progress_bar.setValue(received)
         else:
             self.progress_bar.setRange(0, 0)
+        if self.gb_window is not None:
+            self.gb_window.on_download_progress(received, total)
+
+    def cancel_gb_download(self) -> bool:
+        """Прерывает текущее скачивание мода; возвращает True, если оно шло."""
+        worker = self.gb_download_worker
+        if worker is None or not worker.isRunning():
+            return False
+        worker.cancel()
+        self.statusBar().showMessage("⏹ Прерываем скачивание мода…", 5000)
+        return True
+
+    def on_gb_download_cancelled(self) -> None:
+        """Обрабатывает прерванное пользователем скачивание мода."""
+        self.btn_deploy.setEnabled(True)
+        self.progress_bar.setVisible(False)
+        self.progress_bar.setRange(0, 100)
+        if self.gb_window is not None:
+            self.gb_window.on_download_cancelled()
+        self.statusBar().showMessage("⏹ Скачивание мода прервано", 5000)
 
     def on_gb_download_finished(self, mod_name: str, file_name: str, staged: str) -> None:
         """Обрабатывает успешное завершение скачивания мода."""
@@ -640,6 +688,7 @@ class DeadlockModManager(QMainWindow):
         self.list_widget.clear()
         deployed_set = get_deployed_mods_set(self.game_path)
         pending_tags = []
+        known_heroes: set[str] = set()
 
         for index, folder in enumerate(sorted(STAGING_DIR.iterdir())):
             meta_file = folder / "meta.json"
@@ -679,11 +728,18 @@ class DeadlockModManager(QMainWindow):
                 card = ModCardWidget(folder.name, meta, is_deployed, self)
                 item = QListWidgetItem(self.list_widget)
                 item.setSizeHint(QSize(0, 66))
-                search_text = " ".join([name] + heroes + types).lower()
+                known_heroes.update(heroes)
+                search_text = " ".join([card.display_name, name, *heroes, *types]).lower()
                 item.setData(Qt.UserRole, search_text)
                 item.setData(
                     FILTER_ROLE,
-                    {"enabled": enabled, "deployed": is_deployed, "stale": is_stale},
+                    {
+                        "enabled": enabled,
+                        "deployed": is_deployed,
+                        "stale": is_stale,
+                        "heroes": heroes,
+                        "types": types,
+                    },
                 )
 
                 self.list_widget.addItem(item)
@@ -691,9 +747,51 @@ class DeadlockModManager(QMainWindow):
                 if index < 14:
                     card.play_intro(index * 22)
 
+        self._sync_hero_filter(known_heroes)
         self.update_mod_counter()
         self.filter_list(self.search_input.text())
         self._schedule_tags_scan(pending_tags)
+
+    def _sync_hero_filter(self, known_heroes: set[str]) -> None:
+        """Дополняет фильтр персонажами из ростера и тегами из staging."""
+        combo = getattr(self, "hero_combo", None)
+        if combo is None:
+            return
+        heroes = sorted(set(HEROES) | known_heroes, key=str.casefold)
+        signature = tuple(heroes)
+        if getattr(self, "_hero_filter_values", ()) == signature:
+            return
+
+        current = combo.currentData()
+        self._hero_filter_values = signature
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem("Все герои", HERO_FILTER_ALL)
+        combo.addItem("Без героя", HERO_FILTER_NONE)
+        for hero in heroes:
+            combo.addItem(hero, hero)
+        index = combo.findData(current) if current is not None else 0
+        combo.setCurrentIndex(max(0, index))
+        combo.blockSignals(False)
+
+    def on_mod_renamed(self, folder_name: str, display_name: str) -> None:
+        """Обновляет название в поисковом индексе после переименования."""
+        for i in range(self.list_widget.count()):
+            item = self.list_widget.item(i)
+            card = self.list_widget.itemWidget(item)
+            if card is None or card.folder_name != folder_name:
+                continue
+            data = item.data(FILTER_ROLE)
+            if not isinstance(data, dict):
+                data = {}
+            heroes = [str(h) for h in data.get("heroes") or []]
+            types = [str(t) for t in data.get("types") or []]
+            item.setData(
+                Qt.UserRole,
+                " ".join([display_name, card.raw_name, *heroes, *types]).lower(),
+            )
+            break
+        self.apply_filters()
 
     def _schedule_tags_scan(self, folders: list[Path]):
         if not folders:
@@ -775,7 +873,17 @@ class DeadlockModManager(QMainWindow):
             else:
                 match_filter = True
 
-            hidden = not (match_query and match_filter)
+            match_hero = True
+            hero_combo = getattr(self, "hero_combo", None)
+            if hero_combo is not None:
+                hero_filter = hero_combo.currentData()
+                item_heroes = data.get("heroes") or []
+                if hero_filter == HERO_FILTER_NONE:
+                    match_hero = not item_heroes
+                elif hero_filter:
+                    match_hero = hero_filter in item_heroes
+
+            hidden = not (match_query and match_filter and match_hero)
             item.setHidden(hidden)
             if not hidden:
                 visible += 1

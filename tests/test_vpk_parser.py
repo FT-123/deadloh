@@ -42,6 +42,22 @@ def test_hero_alias_maps_to_display_name(tmp_path, monkeypatch):
     assert "Grey Talon" in result["heroes"]
 
 
+def test_hero_map_has_only_official_names():
+    from core.constants import HERO_ALIASES, HERO_MAP
+
+    assert len(HERO_MAP) == 44
+    assert len(set(HERO_MAP.values())) == 44
+    # Официальный ключ — snake_case отображаемого имени героя.
+    for key, name in HERO_MAP.items():
+        expected = name.lower().replace(" & ", "_and_").replace(" ", "_")
+        assert key == expected
+    # Внутренние имена живут отдельно и не перекрывают официальные.
+    assert not set(HERO_MAP) & set(HERO_ALIASES)
+    assert not {"atlas", "bull", "archer", "tengu"} & set(HERO_MAP)
+    # Каждый алиас ведёт на героя из официального ростера.
+    assert set(HERO_ALIASES.values()) <= set(HERO_MAP.values())
+
+
 def test_ui_tag(tmp_path, monkeypatch):
     monkeypatch.setattr(
         vpk_parser,

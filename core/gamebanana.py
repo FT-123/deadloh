@@ -13,6 +13,8 @@ GameBanana (https://gamebanana.com) — каталог модов для Deadloc
 import concurrent.futures
 import json
 import math
+import socket
+import threading
 import time
 import urllib.parse
 import urllib.request
@@ -43,6 +45,65 @@ POPULAR_CONCURRENCY = 8
 
 class GameBananaError(Exception):
     """Ошибка обращения к GameBanana API или неожиданный формат ответа."""
+
+
+class DownloadCancelled(GameBananaError):
+    """Скачивание мода прервано пользователем."""
+
+
+def _close_stream(stream: Any) -> None:
+    """Аварийно закрывает HTTP-поток, чтобы разблокировать чтение в другом потоке."""
+    if stream is None:
+        return
+    try:
+        # shutdown() надёжнее close(): прерывает уже начатый recv на Windows.
+        raw = getattr(getattr(stream, "fp", None), "raw", None)
+        sock = getattr(raw, "_sock", None)
+        if sock is not None:
+            sock.shutdown(socket.SHUT_RDWR)
+    except Exception:  # noqa: BLE001, S110 — сокет мог уже закрыться
+        pass
+    try:
+        stream.close()
+    except Exception:  # noqa: BLE001, S110 — поток мог уже закрыться
+        pass
+
+
+class DownloadCancelToken:
+    """Флаг отмены скачивания, безопасный для вызова из другого потока."""
+
+    def __init__(self) -> None:
+        self._cancelled = threading.Event()
+        self._lock = threading.Lock()
+        self._stream: Any = None
+
+    @property
+    def cancelled(self) -> bool:
+        return self._cancelled.is_set()
+
+    def cancel(self) -> None:
+        """Помечает скачивание отменённым и будит заблокированное чтение."""
+        self._cancelled.set()
+        with self._lock:
+            stream = self._stream
+        _close_stream(stream)
+
+    def raise_if_cancelled(self) -> None:
+        if self._cancelled.is_set():
+            raise DownloadCancelled("скачивание отменено")
+
+    def bind(self, stream: Any) -> None:
+        """Запоминает активный HTTP-поток, чтобы cancel() мог его закрыть."""
+        with self._lock:
+            self._stream = stream
+        if self._cancelled.is_set():
+            _close_stream(stream)
+
+    def unbind(self, stream: Any) -> None:
+        with self._lock:
+            if self._stream is stream:
+                self._stream = None
+
 
 
 @dataclass
@@ -384,15 +445,24 @@ def download_file_bytes(
     mod_id: int,
     file_id: int | None = None,
     progress_callback=None,
+    cancel_token: DownloadCancelToken | None = None,
 ) -> tuple[GBMod, GBFile, bytes]:
     """Скачивает последнюю версию мода. Возвращает (мод, файл, содержимое).
 
     ``progress_callback`` — необязательная функция ``(received: int, total: int)``,
     вызываемая после каждой части скачанного файла; ``total == 0``, если сервер
     не сообщил размер через Content-Length.
+    ``cancel_token`` позволяет прервать скачивание из другого потока: загрузка
+    прекращается на ближайшем чанке, а заблокированное чтение разблокируется.
     """
+    if cancel_token is not None:
+        cancel_token.raise_if_cancelled()
     mod = get_mod(mod_id)
+    if cancel_token is not None:
+        cancel_token.raise_if_cancelled()
     files = get_mod_files(mod_id)
+    if cancel_token is not None:
+        cancel_token.raise_if_cancelled()
     chosen: GBFile | None = None
     if file_id is not None:
         chosen = next((f for f in files if f.file_id == file_id), None)
@@ -411,22 +481,35 @@ def download_file_bytes(
             method="GET",
         )
         with urllib.request.urlopen(request, timeout=GB_DOWNLOAD_TIMEOUT_SECONDS) as response:
-            total = 0
-            headers = getattr(response, "headers", None)
-            if headers is not None:
-                total = _to_int(headers.get("Content-Length"), 0)
-            data_parts: list[bytes] = []
-            received = 0
-            while True:
-                chunk = response.read(65536)
-                if not chunk:
-                    break
-                data_parts.append(chunk)
-                received += len(chunk)
-                if progress_callback is not None:
-                    progress_callback(received, total)
-            data = b"".join(data_parts)
+            if cancel_token is not None:
+                cancel_token.bind(response)
+            try:
+                total = 0
+                headers = getattr(response, "headers", None)
+                if headers is not None:
+                    total = _to_int(headers.get("Content-Length"), 0)
+                data_parts: list[bytes] = []
+                received = 0
+                while True:
+                    if cancel_token is not None:
+                        cancel_token.raise_if_cancelled()
+                    chunk = response.read(65536)
+                    if not chunk:
+                        break
+                    data_parts.append(chunk)
+                    received += len(chunk)
+                    if progress_callback is not None:
+                        progress_callback(received, total)
+                data = b"".join(data_parts)
+            finally:
+                if cancel_token is not None:
+                    cancel_token.unbind(response)
+    except DownloadCancelled:
+        raise
     except Exception as exc:
+        # Закрытие потока при отмене приходит сюда как OSError — не путаем с ошибкой сети.
+        if cancel_token is not None and cancel_token.cancelled:
+            raise DownloadCancelled("скачивание отменено") from exc
         raise GameBananaError(f"GameBanana: не удалось скачать файл «{chosen.name}» — {exc}") from exc
     return mod, chosen, data
 

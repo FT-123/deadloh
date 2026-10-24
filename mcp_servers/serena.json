@@ -1,7 +1,0 @@
-{
-  "_comment": "Reference snippet only: not read by the app or by OpenCode. The active Serena server is configured globally in ~/.config/opencode/opencode.jsonc; project settings live in .serena/project.yml.",
-  "name": "serena",
-  "description": "Serena MCP server for semantic coding assistance.",
-  "command": "uvx --from git+https://github.com/oraios/serena serena start-mcp-server --context ide-assistant --project $(pwd)",
-  "enabled": true
-}
