@@ -480,7 +480,16 @@ class ModCardWidget(QFrame):
         layout.addWidget(self.tags_container, 0, Qt.AlignmentFlag.AlignVCenter)
         self.tags_container.setVisible(bool(heroes or types))
 
-        # 6. Переименование (меняет только подпись в менеджере)
+        # 5.5. Кнопка предпросмотра
+        self.btn_preview = QPushButton("👁")
+        self.btn_preview.setObjectName("iconBtn")
+        self.btn_preview.setToolTip("Предпросмотр мода")
+        self.btn_preview.setCursor(Qt.PointingHandCursor)
+        self.btn_preview.setFixedSize(32, 32)
+        self.btn_preview.clicked.connect(self.on_preview)
+        layout.addWidget(self.btn_preview, 0, Qt.AlignmentFlag.AlignVCenter)
+
+		# 6. Переименование (меняет только подпись в менеджере)
         btn_rename = QPushButton("✏")
         btn_rename.setObjectName("renameBtn")
         btn_rename.setToolTip(
@@ -614,6 +623,11 @@ class ModCardWidget(QFrame):
         self._intro_anim = None
 
     # ── Логика ────────────────────────────────────────────────────────────
+
+    def on_preview(self):
+        """Вызывает открытие/закрытие панели в главном окне."""
+        if hasattr(self.manager, "toggle_preview"):
+            self.manager.toggle_preview(self.folder_name)
 
     def on_fix(self):
         """Вызывает процедуру лечения через менеджер."""

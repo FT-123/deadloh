@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 from PySide6.QtCore import QSize, Qt, QThread, QUrl, Signal
-from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut
+from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut, QColor
 from PySide6.QtWidgets import (
     QButtonGroup,
     QComboBox,
@@ -17,7 +17,10 @@ from PySide6.QtWidgets import (
     QPushButton,
     QVBoxLayout,
     QWidget,
+    QStackedLayout
 )
+
+from core.model_exporter import export_vpk_model_to_glb
 
 from core.archiver import extract_and_stage_archive, stage_vpk_file
 from core.constants import DEADLOCK_APP_ID, HEROES, VALID_EXTS, clean_display_name
@@ -244,9 +247,43 @@ class TagsWorker(QThread):
         self.tags_finished.emit(updated, failed)
 
 
+class ModelPreviewWorker(QThread):
+    """Фоновый экспорт 3D модели из мода."""
+    preview_ready = Signal(str, bool, str, str)  # folder_name, success, glb_path_str, error_msg
+
+    def __init__(self, folder_name: str, mod_folder: Path, game_path: Path | None):
+        super().__init__()
+        self.folder_name = folder_name
+        self.mod_folder = mod_folder
+        self.game_path = game_path
+
+    def run(self):
+        vpk_path = self.mod_folder / "content.vpk"
+        cache_dir = self.mod_folder / ".preview_cache"
+
+        if not vpk_path.exists():
+            self.preview_ready.emit(self.folder_name, False, "", "Файл content.vpk не найден")
+            return
+
+        ok, glb_path, err = export_vpk_model_to_glb(vpk_path, cache_dir, self.game_path)
+        self.preview_ready.emit(self.folder_name, ok, str(glb_path) if glb_path else "", err)
+
+
+from PySide6.QtWebEngineCore import QWebEnginePage
+
+
+class ModelViewerWebPage(QWebEnginePage):
+    """Перенаправляет console.log из браузера напрямую в консоль Python."""
+    def javaScriptConsoleMessage(self, level, message, line_number, source_id):
+        if message.startswith("[3D]"):
+            print(message)
+
+
 class DeadlockModManager(QMainWindow):
     def __init__(self):
         super().__init__()
+        self.setAttribute(Qt.WidgetAttribute.WA_NativeWindow, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_DontCreateNativeAncestors, True)
         self.setWindowTitle("Deadlock Mod Manager")
         self.resize(1060, 700)
         self.setStyleSheet(load_stylesheet())
@@ -278,15 +315,12 @@ class DeadlockModManager(QMainWindow):
 
     def closeEvent(self, event):
         # Не даём Qt уничтожить работающий QThread (это аварийно завершает процесс).
-        download = self.gb_download_worker
-        if download is not None and download.isRunning():
-            download.cancel()
         if self.gb_window is not None:
             self.gb_window.shutdown()
         workers = (
             self.import_worker, self.scan_worker, self.deploy_worker,
             self.heal_worker, self.heal_all_worker, self.tags_worker,
-            self.gb_search_worker, download,
+            self.gb_search_worker, self.gb_download_worker,
         )
         running = [w for w in workers if w and w.isRunning()]
         if running:
@@ -469,9 +503,19 @@ class DeadlockModManager(QMainWindow):
         chips_row.addStretch(1)
         layout.addLayout(chips_row)
 
-        # ── Список модов ──────────────────────────────────────────────────
+        # ── Список модов + Боковая панель ─────────────────────────────────
+        content_box = QHBoxLayout()
+        content_box.setSpacing(12)
+
         self.list_widget = DropListWidget()
-        layout.addWidget(self.list_widget, 1)
+        content_box.addWidget(self.list_widget, 1)
+
+        # Создаём панель предпросмотра (пока скрыта)
+        self.preview_panel = self._build_preview_panel()
+        self.preview_panel.setVisible(False)
+        content_box.addWidget(self.preview_panel)
+
+        layout.addLayout(content_box, 1)
 
         # ── Нижняя панель действий ────────────────────────────────────────
         bottom = QHBoxLayout()
@@ -1242,3 +1286,219 @@ class DeadlockModManager(QMainWindow):
                     self.game_path = Path(data["game_path"])
             except Exception:
                 pass
+
+# ── БОКОВАЯ ПАНЕЛЬ ПРЕДПРОСМОТРА ──────────────────────────────────────
+
+    def _build_preview_panel(self) -> QWidget:
+        """Создаёт боковую панель с 3D-просмотром."""
+        panel = QWidget()
+        panel.setObjectName("previewPanel")
+        panel.setFixedWidth(380)
+        panel.setStyleSheet("""
+            QWidget#previewPanel {
+                background-color: #17191e;
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 14px;
+            }
+        """)
+
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(10)
+
+        # 1. Шапка панели
+        header_row = QHBoxLayout()
+        header_row.setSpacing(8)
+
+        self.lbl_preview_title = ElidedLabel()
+        self.lbl_preview_title.setStyleSheet("font-size: 14px; font-weight: bold; color: #a8c7fa;")
+        self.lbl_preview_title.set_full_text("Предпросмотр")
+        header_row.addWidget(self.lbl_preview_title, 1)
+
+        btn_close = QPushButton("✕")
+        btn_close.setObjectName("iconBtn")
+        btn_close.setFixedSize(26, 26)
+        btn_close.setCursor(Qt.PointingHandCursor)
+        btn_close.clicked.connect(self.hide_preview)
+        header_row.addWidget(btn_close)
+        layout.addLayout(header_row)
+
+        # 2. Область для 3D: единственный контейнер со стеком
+        container = QWidget()
+        container.setStyleSheet("background-color: #121316; border-radius: 10px;")
+        self.preview_stack = QStackedLayout(container)
+
+        # Виджет 0: Статус (загрузка / ошибка)
+        self.lbl_preview_status = QLabel("Загрузка...")
+        self.lbl_preview_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl_preview_status.setWordWrap(True)
+        self.lbl_preview_status.setStyleSheet("color: rgba(255, 255, 255, 0.5); font-size: 13px; padding: 20px;")
+        self.preview_stack.addWidget(self.lbl_preview_status)
+
+        layout.addWidget(container, 1)
+
+        # Виджет 1: Браузерный 3D-вьювер (создаётся лениво)
+        self.web_view = None
+
+        # Подсказка по управлению снизу
+        lbl_hint = QLabel("🖱 ЛКМ: вращение • ПКМ: сдвиг • Колесо: зум")
+        lbl_hint.setStyleSheet("font-size: 11px; color: rgba(255, 255, 255, 0.3);")
+        lbl_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(lbl_hint)
+
+        self._active_preview_folder: str | None = None
+        self.model_preview_worker: ModelPreviewWorker | None = None
+        return panel
+
+    def toggle_preview(self, folder_name: str):
+        if self.preview_panel.isVisible() and self._active_preview_folder == folder_name:
+            self.hide_preview()
+        else:
+            self.show_preview(folder_name)
+
+    def show_preview(self, folder_name: str):
+        self._active_preview_folder = folder_name
+        self.lbl_preview_title.set_full_text(clean_display_name(folder_name))
+        self.preview_panel.setVisible(True)
+
+        # Показываем статус загрузки
+        self.lbl_preview_status.setText("⏳ Извлечение и подготовка 3D модели…\n(первый раз может занять пару секунд)")
+        self.preview_stack.setCurrentIndex(0)
+
+        mod_folder = STAGING_DIR / folder_name
+
+        # Запускаем фоновый экспорт
+        self.model_preview_worker = ModelPreviewWorker(folder_name, mod_folder, self.game_path)
+        self.model_preview_worker.preview_ready.connect(self._on_model_ready)
+        self.model_preview_worker.start()
+
+    def _ensure_web_view(self):
+        """Создаёт QWebEngineView при первом показе предпросмотра."""
+        if self.web_view is not None:
+            return self.web_view
+
+        from PySide6.QtWebEngineCore import QWebEngineSettings
+        from PySide6.QtWebEngineWidgets import QWebEngineView
+
+        view = QWebEngineView()
+        # Подключаем перехватчик консоли в Python
+        view.setPage(ModelViewerWebPage(view))
+
+        view.setAttribute(Qt.WidgetAttribute.WA_NativeWindow, True)
+        view.setStyleSheet("background: transparent; border-radius: 10px;")
+        view.page().setBackgroundColor(QColor("#17191e"))
+
+        settings = view.settings()
+        settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessFileUrls, True)
+        settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, True)
+
+        self.web_view = view
+        self.preview_stack.addWidget(view)
+        return view
+
+    def _on_model_ready(self, folder_name: str, success: bool, glb_path_str: str, error_msg: str):
+        # Если пока шла конвертация пользователь уже кликнул на другой мод — игнорируем
+        if self._active_preview_folder != folder_name:
+            return
+
+        if not success or not glb_path_str:
+            self.lbl_preview_status.setText(f"ℹ️ {error_msg}")
+            self.preview_stack.setCurrentIndex(0)
+            return
+
+        # Модель готова — загружаем в <model-viewer>
+        glb_path = Path(glb_path_str)
+        file_url = QUrl.fromLocalFile(str(glb_path)).toString()
+
+        print(f"[DEBUG] Загружаем GLB файл: {glb_path_str} (Размер: {glb_path.stat().st_size} байт)")
+
+        html = f"""
+                <!DOCTYPE html>
+                <html>
+                <head>
+                    <meta charset="utf-8">
+                    <script type="module" src="https://ajax.googleapis.com/ajax/libs/model-viewer/4.0.0/model-viewer.min.js"></script>
+                    <style>
+                        body, html {{ 
+                            margin: 0; padding: 0; width: 100%; height: 100%; 
+                            background: #17191e; overflow: hidden; 
+                        }}
+                        model-viewer {{ 
+                            width: 100%; height: 100%; outline: none; 
+                            --poster-color: transparent;
+                        }}
+                    </style>
+                </head>
+                <body>
+                    <model-viewer 
+                        id="viewer"
+                        src="{file_url}" 
+                        camera-controls 
+                        auto-rotate 
+                        auto-rotate-delay="1000"
+                        shadow-intensity="1.5" 
+                        shadow-softness="0.7"
+                        environment-image="neutral"
+                        camera-orbit="0deg 75deg 105%"
+                        min-camera-orbit="auto auto 5%"
+                        max-camera-orbit="auto auto 500%"
+                        exposure="1.1">
+                    </model-viewer>
+
+                    <script>
+                        const viewer = document.getElementById('viewer');
+
+                        viewer.addEventListener('load', () => {{
+                            const anims = viewer.availableAnimations || [];
+
+                            console.log("[3D] 📦 Всего анимаций в файле: " + anims.length);
+
+                            if (anims.length > 0) {{
+                                console.log("[3D] 📋 Доступные: " + anims.join(', '));
+
+                                // Ищем спокойную стойку (idle, stand, menu) без бега и приседа
+                                let bestAnim = anims.find(name => {{
+                                    const n = name.toLowerCase();
+                                    return (n.includes('idle') || n.includes('stand') || n.includes('menu')) 
+                                           && !n.includes('crouch') && !n.includes('run');
+                                }});
+
+                                // Если идеальной стойки не нашлось — берём первую
+                                if (!bestAnim) {{
+                                    bestAnim = anims[0];
+                                }}
+
+                                viewer.animationName = bestAnim;
+                                viewer.play();
+                                console.log("[3D] ▶ Включена анимация: " + bestAnim);
+                            }} else {{
+                                console.log("[3D] ℹ️ В модели нет запечённых анимаций (показывается статичная поза)");
+                            }}
+
+                            // Скрываем лишние оверлейные пропы (двери, тулганы и т.д.)
+                            const symbols = Object.getOwnPropertySymbols(viewer);
+                            const sceneSymbol = symbols.find(s => s.description === 'scene');
+                            if (sceneSymbol && viewer[sceneSymbol]) {{
+                                const scene = viewer[sceneSymbol];
+                                scene.traverse((node) => {{
+                                    const name = (node.name || '').toLowerCase();
+                                    if (name.includes('door') || name.includes('block') || name.includes('toolgun')) {{
+                                        node.visible = false;
+                                    }}
+                                }});
+                            }}
+                        }});
+                    </script>
+                </body>
+                </html>
+                """
+        view = self._ensure_web_view()
+        view.setHtml(html, baseUrl=QUrl.fromLocalFile(str(glb_path.parent) + "/"))
+        self.preview_stack.setCurrentWidget(view)
+
+    def hide_preview(self):
+        self._active_preview_folder = None
+        self.preview_panel.setVisible(False)
+        # Очищаем WebView, чтобы освободить видеопамять
+        if getattr(self, "web_view", None) is not None:
+            self.web_view.setHtml("<html><body style='background:#121316;'></body></html>")
