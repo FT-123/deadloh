@@ -6,16 +6,49 @@ from pathlib import Path
 
 
 def get_s2v_cli_path() -> Path | None:
-    """Ищет Source2Viewer-CLI.exe в корне проекта или в tools/."""
-    base = Path(sys.argv[0]).resolve().parent
-    candidates = [
-        base / "Source2Viewer-CLI.exe",
-        base / "tools" / "Source2Viewer-CLI.exe",
-        Path.cwd() / "Source2Viewer-CLI.exe",
+    """Ищет Source2Viewer-CLI.exe: в _internal (PyInstaller), рядом с .exe или в tools/."""
+    # 1. Если запущено через PyInstaller (sys._MEIPASS указывает на _internal)
+    meipass = getattr(sys, '_MEIPASS', None)
+    if meipass:
+        mei_path = Path(meipass)
+        candidates_mei = [
+            mei_path / "Source2Viewer-CLI.exe",
+            mei_path / "tools" / "Source2Viewer-CLI.exe",
+        ]
+        for c in candidates_mei:
+            if c.exists():
+                return c
+
+    # 2. Определяем рабочие папки
+    if getattr(sys, 'frozen', False):
+        app_dir = Path(sys.executable).resolve().parent
+        internal_dir = app_dir / "_internal"
+    else:
+        app_dir = Path(__file__).resolve().parent.parent
+        internal_dir = app_dir
+
+    # 3. Список всех возможных мест поиска
+    search_dirs = [
+        internal_dir,                   # _internal/ (куда PyInstaller кладёт бинарники)
+        internal_dir / "tools",         # _internal/tools/
+        app_dir / "tools",              # tools/ рядом с .exe
+        app_dir,                        # прямо рядом с .exe
+        Path.cwd() / "tools",           # tools/ в текущей рабочей папке
+        Path.cwd(),
     ]
-    for c in candidates:
-        if c.exists():
-            return c
+
+    for d in search_dirs:
+        target = d / "Source2Viewer-CLI.exe"
+        if target.exists():
+            return target
+
+    # 4. Если друг всё-таки распаковал архив в глубокую подпапку — ищем рекурсивно
+    for d in (internal_dir, app_dir / "tools"):
+        if d.exists():
+            found = list(d.rglob("Source2Viewer-CLI.exe"))
+            if found:
+                return found[0]
+
     return None
 
 

@@ -10,17 +10,24 @@ NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
 
 
 def get_vpkmerge_path() -> Path | None:
-    """Ищет vpkmerge.exe в корне, _internal или временной папке PyInstaller"""
-    candidates = [
-        BASE_DIR / "vpkmerge.exe",
-        BASE_DIR / "_internal" / "vpkmerge.exe",
-    ]
-    _meipass = getattr(sys, "_MEIPASS", None)
-    if _meipass:
-        candidates.append(Path(_meipass) / "vpkmerge.exe")
-    for p in candidates:
-        if p.exists():
-            return p
+    if getattr(sys, 'frozen', False):
+        base = Path(sys.executable).resolve().parent
+        candidates = [
+            base / "_internal" / "tools" / "vpkmerge.exe",
+            base / "_internal" / "vpkmerge.exe",
+            base / "tools" / "vpkmerge.exe",
+            base / "vpkmerge.exe",
+        ]
+    else:
+        base = Path(__file__).resolve().parent.parent
+        candidates = [
+            base / "tools" / "vpkmerge.exe",
+            base / "vpkmerge.exe",
+        ]
+
+    for c in candidates:
+        if c.exists():
+            return c
     return None
 
 

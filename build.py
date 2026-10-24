@@ -74,7 +74,6 @@ def save_multires_ico(output_path: Path):
 
     print(f"✅ Создан мульти-размерный .ico (слои: {sizes}) -> {output_path.name}")
 
-
 def build():
     root_dir = Path(__file__).resolve().parent
     ico_file = root_dir / "app_icon.ico"
@@ -105,15 +104,16 @@ def build():
     ]
 
     for b in binaries:
-        # Ищем в корне или в tools/
-        candidate = root_dir / b
+        # Ищем файл в tools/ или в корне
+        candidate = root_dir / "tools" / b
         if not candidate.exists():
-            candidate = root_dir / "tools" / b
+            candidate = root_dir / b
 
         if candidate.exists():
-            args.append(f"--add-binary={candidate};.")
+            # Упаковываем в подпапку tools (а не в корень):
+            args.append(f"--add-binary={candidate};tools")
         else:
-            print(f"⚠️ Внимание: {b} не найден, сборка может быть неполной!")
+            print(f"⚠️ Внимание: {b} не найден!")
 
     print("\n🚀 Сборка через PyInstaller...")
     PyInstaller.__main__.run(args)
