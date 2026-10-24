@@ -1,0 +1,565 @@
+/* ============================================================
+   Deadlock Mod Manager — тема «Gemini minimalist»
+   Фон #131314 · поверхности #1e1f20 / #282a2c · акцент #a8c7fa
+   ============================================================ */
+
+QMainWindow,
+QDialog {
+    background-color: #131314;
+}
+
+QWidget {
+    color: #e3e3e3;
+    font-family: 'Segoe UI';
+    font-size: 13px;
+}
+
+QWidget#root,
+QWidget#transparentPane {
+    background: transparent;
+}
+
+/* ── Типографика ─────────────────────────────────────────── */
+
+QLabel {
+    background: transparent;
+}
+
+QLabel#appTitle {
+    font-size: 22px;
+    font-weight: 600;
+    letter-spacing: 0.2px;
+    color: #e3e3e3;
+}
+
+QLabel#titleLabel {
+    font-size: 18px;
+    font-weight: 600;
+    color: #e3e3e3;
+}
+
+QLabel#subtitle,
+QLabel#mutedLabel,
+QLabel#statusLabel {
+    color: #9aa0a6;
+    font-size: 11px;
+}
+
+QLabel#sectionLabel {
+    color: #9aa0a6;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 1.2px;
+}
+
+QLabel#detailName {
+    font-size: 16px;
+    font-weight: 600;
+    color: #e3e3e3;
+}
+
+QLabel#detailMeta {
+    color: #9aa0a6;
+    font-size: 11px;
+}
+
+QLabel#detailStats {
+    color: #c4c7c5;
+    font-size: 12px;
+}
+
+QLabel#detailFile {
+    color: #a8c7fa;
+    font-size: 11px;
+}
+
+QLabel#detailImage {
+    background-color: #131314;
+    border: 1px solid #303134;
+    border-radius: 14px;
+    color: #5f6368;
+    font-size: 12px;
+}
+
+/* ── Поиск ───────────────────────────────────────────────── */
+
+QLineEdit#searchField {
+    background-color: #1e1f20;
+    border: 1px solid #303134;
+    border-radius: 23px;
+    padding: 0 20px;
+    color: #e3e3e3;
+    selection-background-color: #a8c7fa;
+    selection-color: #062e6f;
+}
+
+QLineEdit#searchField:hover {
+    background-color: #232425;
+    border-color: #3c3d3f;
+}
+
+QLineEdit#searchField:focus {
+    background-color: #232425;
+    border-color: #a8c7fa;
+}
+
+/* ── Кнопки ──────────────────────────────────────────────── */
+
+QPushButton {
+    background-color: #282a2c;
+    color: #e3e3e3;
+    border: 1px solid transparent;
+    border-radius: 18px;
+    padding: 8px 18px;
+    font-weight: 500;
+}
+
+QPushButton:hover {
+    background-color: #333537;
+}
+
+QPushButton:pressed {
+    background-color: #3c4043;
+}
+
+QPushButton:disabled {
+    background-color: #1e1f20;
+    color: #5f6368;
+}
+
+QPushButton#primaryBtn {
+    background-color: #a8c7fa;
+    color: #062e6f;
+    font-weight: 600;
+    padding: 9px 24px;
+}
+
+QPushButton#primaryBtn:hover {
+    background-color: #c5dbfd;
+}
+
+QPushButton#primaryBtn:pressed {
+    background-color: #8fb8f6;
+}
+
+QPushButton#primaryBtn:disabled {
+    background-color: #2b3a4d;
+    color: #7c8794;
+}
+
+QPushButton#launchBtn {
+    background: transparent;
+    border: 1px solid #444746;
+    color: #a8c7fa;
+    font-weight: 600;
+}
+
+QPushButton#launchBtn:hover {
+    background-color: #1e1f20;
+    border-color: #a8c7fa;
+}
+
+QPushButton#launchBtn:pressed {
+    background-color: #282a2c;
+}
+
+QPushButton#ghostBtn {
+    background: transparent;
+    border: 1px solid #3c3d3f;
+    color: #c4c7c5;
+}
+
+QPushButton#ghostBtn:hover {
+    background-color: #1e1f20;
+    border-color: #5f6368;
+    color: #e3e3e3;
+}
+
+QPushButton#ghostBtn:disabled {
+    background: transparent;
+    border-color: #2a2c2e;
+    color: #5f6368;
+}
+
+QPushButton#iconBtn {
+    background: transparent;
+    border: none;
+    color: #c4c7c5;
+    border-radius: 16px;
+    padding: 6px 10px;
+    font-size: 15px;
+}
+
+QPushButton#iconBtn:hover {
+    background-color: #282a2c;
+    color: #e3e3e3;
+}
+
+QPushButton#filterChip {
+    background-color: transparent;
+    border: 1px solid #3c3d3f;
+    border-radius: 15px;
+    padding: 5px 15px;
+    color: #c4c7c5;
+    font-size: 12px;
+    font-weight: 500;
+}
+
+QPushButton#filterChip:hover {
+    background-color: #1e1f20;
+    border-color: #5f6368;
+    color: #e3e3e3;
+}
+
+QPushButton#filterChip:checked {
+    background-color: #a8c7fa;
+    border-color: #a8c7fa;
+    color: #062e6f;
+    font-weight: 600;
+}
+
+QPushButton#fixBtn {
+    background-color: rgba(253, 214, 99, 9%);
+    color: #fdd663;
+    border: 1px solid rgba(253, 214, 99, 35%);
+    border-radius: 13px;
+    padding: 4px 12px;
+    font-size: 11px;
+    font-weight: 600;
+}
+
+QPushButton#fixBtn:hover {
+    background-color: rgba(253, 214, 99, 18%);
+    border-color: #fdd663;
+}
+
+QPushButton#deleteBtn {
+    background: transparent;
+    border: none;
+    color: #8e918f;
+    border-radius: 14px;
+    padding: 4px 9px;
+    font-size: 14px;
+}
+
+QPushButton#deleteBtn:hover {
+    background-color: rgba(242, 139, 130, 14%);
+    color: #f28b82;
+}
+
+QPushButton#stateBtn {
+    background-color: #1e1f20;
+    border: 1px solid #3c3d3f;
+    border-radius: 16px;
+    padding: 6px 14px;
+    font-size: 11px;
+    font-weight: 600;
+    color: #9aa0a6;
+}
+
+QPushButton#stateBtn:hover {
+    border-color: #5f6368;
+    background-color: #282a2c;
+}
+
+QPushButton#stateBtn[state="ok"] {
+    background-color: rgba(129, 201, 149, 12%);
+    border: 1px solid rgba(129, 201, 149, 35%);
+    color: #81c995;
+}
+
+QPushButton#stateBtn[state="warn"] {
+    background-color: rgba(242, 139, 130, 10%);
+    border: 1px solid rgba(242, 139, 130, 35%);
+    color: #f28b82;
+}
+
+/* ── Плашки-статусы и теги ───────────────────────────────── */
+
+QLabel#statusPill,
+QLabel#tagPill {
+    border-radius: 11px;
+    padding: 3px 10px;
+    font-size: 11px;
+    font-weight: 600;
+}
+
+QLabel#statusPill[state="deployed"] {
+    background-color: rgba(129, 201, 149, 14%);
+    color: #81c995;
+    border: 1px solid rgba(129, 201, 149, 32%);
+}
+
+QLabel#statusPill[state="pending"] {
+    background-color: rgba(253, 214, 99, 11%);
+    color: #fdd663;
+    border: 1px solid rgba(253, 214, 99, 30%);
+}
+
+QLabel#statusPill[state="removing"] {
+    background-color: rgba(242, 139, 130, 12%);
+    color: #f28b82;
+    border: 1px solid rgba(242, 139, 130, 30%);
+}
+
+QLabel#statusPill[state="off"] {
+    background-color: rgba(154, 160, 166, 10%);
+    color: #9aa0a6;
+    border: 1px solid rgba(154, 160, 166, 22%);
+}
+
+QLabel#tagPill[tagKind="hero"] {
+    background-color: rgba(168, 199, 250, 13%);
+    color: #a8c7fa;
+    border: 1px solid rgba(168, 199, 250, 28%);
+}
+
+QLabel#tagPill[tagKind="type"] {
+    background-color: rgba(196, 167, 240, 13%);
+    color: #c4a7f0;
+    border: 1px solid rgba(196, 167, 240, 28%);
+}
+
+/* ── Карточки статистики ─────────────────────────────────── */
+
+QFrame#statBadge {
+    background-color: #1e1f20;
+    border: 1px solid #26282a;
+    border-radius: 16px;
+}
+
+QFrame#statBadge:hover {
+    border-color: #3c3d3f;
+    background-color: #232425;
+}
+
+QLabel#statValue {
+    font-size: 19px;
+    font-weight: 600;
+    color: #e3e3e3;
+}
+
+QLabel#statCaption {
+    color: #9aa0a6;
+    font-size: 11px;
+}
+
+QLabel#statDot {
+    font-size: 11px;
+}
+
+/* ── Списки модов ────────────────────────────────────────── */
+
+QListWidget#modList,
+QListWidget#gbGallery {
+    background: transparent;
+    border: none;
+    outline: 0;
+}
+
+QListWidget#modList::item {
+    background: transparent;
+    border: none;
+    padding: 3px 0;
+}
+
+QListWidget#modList::item:hover,
+QListWidget#modList::item:selected {
+    background: transparent;
+}
+
+QListWidget#gbGallery::item {
+    border-radius: 16px;
+    padding: 8px;
+    color: #c4c7c5;
+}
+
+QListWidget#gbGallery::item:hover {
+    background-color: #1e1f20;
+    color: #e3e3e3;
+}
+
+QListWidget#gbGallery::item:selected {
+    background-color: #282a2c;
+    color: #e3e3e3;
+    border: 1px solid #444746;
+}
+
+/* ── Скроллбары ──────────────────────────────────────────── */
+
+QScrollBar:vertical {
+    background: transparent;
+    width: 8px;
+    margin: 2px 0;
+}
+
+QScrollBar::handle:vertical {
+    background: #3c4043;
+    border-radius: 4px;
+    min-height: 36px;
+}
+
+QScrollBar::handle:vertical:hover {
+    background: #5f6368;
+}
+
+QScrollBar::add-line:vertical,
+QScrollBar::sub-line:vertical,
+QScrollBar::add-page:vertical,
+QScrollBar::sub-page:vertical {
+    background: transparent;
+    border: none;
+    height: 0;
+}
+
+QScrollBar:horizontal {
+    background: transparent;
+    height: 8px;
+}
+
+QScrollBar::handle:horizontal {
+    background: #3c4043;
+    border-radius: 4px;
+    min-width: 36px;
+}
+
+QScrollBar::handle:horizontal:hover {
+    background: #5f6368;
+}
+
+QScrollBar::add-line:horizontal,
+QScrollBar::sub-line:horizontal,
+QScrollBar::add-page:horizontal,
+QScrollBar::sub-page:horizontal {
+    background: transparent;
+    border: none;
+    width: 0;
+}
+
+/* ── Статус-бар и прогресс ───────────────────────────────── */
+
+QStatusBar {
+    background: transparent;
+    color: #9aa0a6;
+    border-top: 1px solid #26282a;
+    font-size: 11px;
+}
+
+QStatusBar::item {
+    border: none;
+}
+
+QStatusBar QLabel {
+    color: #9aa0a6;
+    font-size: 11px;
+}
+
+QProgressBar {
+    background-color: #282a2c;
+    border: none;
+    border-radius: 3px;
+    color: transparent;
+}
+
+QProgressBar::chunk {
+    border-radius: 3px;
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 #4796e3, stop:0.5 #9177c7, stop:1 #ca6673);
+}
+
+/* ── Всплывающее уведомление ─────────────────────────────── */
+
+QLabel#toast {
+    background-color: #282a2c;
+    border: 1px solid #444746;
+    border-radius: 18px;
+    color: #e3e3e3;
+    font-size: 12px;
+    font-weight: 500;
+    padding: 10px 20px;
+}
+
+/* ── Диалоги ─────────────────────────────────────────────── */
+
+QMessageBox {
+    background-color: #1e1f20;
+}
+
+QMessageBox QLabel {
+    color: #e3e3e3;
+    font-size: 13px;
+}
+
+QMessageBox QPushButton {
+    min-width: 84px;
+}
+
+QToolTip {
+    background-color: #282a2c;
+    color: #e3e3e3;
+    border: 1px solid #444746;
+    border-radius: 8px;
+    padding: 6px 10px;
+    font-size: 11px;
+}
+
+/* ── GameBanana ──────────────────────────────────────────── */
+
+QFrame#gbDetails {
+    background-color: #1e1f20;
+    border: 1px solid #303134;
+    border-radius: 20px;
+}
+
+QFrame#gbDivider {
+    background-color: #26282a;
+    max-height: 1px;
+    border: none;
+}
+
+QComboBox#characterFilter {
+    background-color: #1e1f20;
+    border: 1px solid #3c3d3f;
+    border-radius: 18px;
+    padding: 0 18px;
+    color: #e3e3e3;
+}
+
+QComboBox#characterFilter:hover {
+    background-color: #282a2c;
+    border-color: #5f6368;
+}
+
+QComboBox#characterFilter:focus {
+    border-color: #a8c7fa;
+}
+
+QComboBox#characterFilter::drop-down {
+    border: none;
+    width: 28px;
+}
+
+QComboBox#characterFilter QAbstractItemView {
+    background-color: #282a2c;
+    color: #e3e3e3;
+    border: 1px solid #444746;
+    border-radius: 12px;
+    padding: 4px;
+    outline: 0;
+    selection-background-color: #3c4043;
+}
+
+QComboBox#characterFilter QAbstractItemView::item {
+    padding: 7px 10px;
+    border-radius: 8px;
+    min-height: 20px;
+}
+
+QComboBox#characterFilter QAbstractItemView::item:hover {
+    background-color: #333537;
+}
+
+QComboBox#characterFilter QAbstractItemView::item:selected {
+    background-color: #3c4043;
+    color: #e3e3e3;
+}

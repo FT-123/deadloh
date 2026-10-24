@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# Build / packaging artifacts
+build/
+dist/
+*.spec
+
+# IDE
+.idea/
+
+# Local runtime state (regenerated or machine-specific)
+config.json
+deployed_state.json
+staging/
+
+# Serena local data (project.yml stays tracked)
+.serena/cache/
+.serena/project.local.yml
+
+# Local tooling indexes
+.codexray/
+
+# OS
+Thumbs.db
+desktop.ini

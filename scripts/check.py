@@ -1,0 +1,130 @@
+"""Одна команда для проверки проекта с компактным выводом.
+
+Запуск: python scripts/check.py [--paths ...] [--strict]
+
+Шаги:
+1) compileall по указанным путям;
+2) ruff в формате concise (печатаются только первые N находок);
+3) pytest с коротким traceback (используется интерпретатор из .venv,
+   если он есть, — там установлен PySide6 и GUI-тесты не пропускаются).
+
+Вывод ограничен, чтобы не засорять контекст при работе через агента.
+"""
+
+import argparse
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_PATHS = ("core", "ui", "tests", "main.py", "build.py", "scripts")
+
+
+def _workspace_python() -> str:
+    """Интерпретатор проекта: .venv (PySide6) или текущий."""
+    venv_python = ROOT / ".venv" / "Scripts" / "python.exe"
+    if venv_python.exists():
+        return str(venv_python)
+    return sys.executable
+
+
+def _run(command: list[str]) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        command,
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+
+
+def _find_ruff() -> list[str] | None:
+    for name in ("ruff", "ruff.exe"):
+        executable = shutil.which(name)
+        if executable:
+            return [executable]
+    try:
+        probe = _run([sys.executable, "-m", "ruff", "--version"])
+    except OSError:
+        return None
+    if probe.returncode == 0:
+        return [sys.executable, "-m", "ruff"]
+    return None
+
+
+def _print_tail(text: str, limit: int) -> None:
+    lines = [line for line in text.splitlines() if line.strip()]
+    for line in lines[-limit:]:
+        print(line)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Компактная проверка проекта")
+    parser.add_argument(
+        "--paths",
+        nargs="+",
+        default=list(DEFAULT_PATHS),
+        help="Что проверять (по умолчанию core ui tests main.py build.py scripts)",
+    )
+    parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="Считать находки ruff ошибкой (по умолчанию baseline не валит проверку)",
+    )
+    parser.add_argument("--no-tests", action="store_true", help="Не запускать pytest")
+    parser.add_argument(
+        "--max-findings", type=int, default=8, help="Сколько находок ruff показать"
+    )
+    args = parser.parse_args()
+
+    python = _workspace_python()
+    paths = args.paths
+    steps = 3 if not args.no_tests else 2
+    failed = False
+    step = 1
+
+    # 1. Синтаксис
+    syntax = _run([python, "-m", "compileall", "-q", *paths])
+    if syntax.returncode == 0:
+        print(f"[{step}/{steps}] syntax: ok")
+    else:
+        print(f"[{step}/{steps}] syntax: FAILED")
+        _print_tail(syntax.stderr or syntax.stdout, 15)
+        failed = True
+    step += 1
+
+    # 2. Линтер
+    ruff = _find_ruff()
+    if ruff is None:
+        print(f"[{step}/{steps}] ruff: skipped (не найден)")
+    else:
+        lint = _run([*ruff, "check", "--output-format", "concise", *paths])
+        findings = [line for line in (lint.stdout or "").splitlines() if line.strip()]
+        status = "ok" if lint.returncode == 0 else "findings"
+        print(f"[{step}/{steps}] ruff: {status} ({len(findings)})")
+        for line in findings[: args.max_findings]:
+            print(f"  {line}")
+        if len(findings) > args.max_findings:
+            print(f"  … ещё {len(findings) - args.max_findings}")
+        if findings and args.strict:
+            failed = True
+    step += 1
+
+    # 3. Тесты
+    if not args.no_tests:
+        tests = _run([python, "-m", "pytest", "-q", "--tb=short"])
+        output = (tests.stdout or "") + (tests.stderr or "")
+        summary = [line for line in output.splitlines() if line.strip()]
+        print(f"[{step}/{steps}] tests: {summary[-1] if summary else 'no output'}")
+        if tests.returncode != 0:
+            failed = True
+            print("---")
+            _print_tail(output, 25)
+
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
