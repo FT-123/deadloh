@@ -221,7 +221,7 @@ def print_publish_instructions(tag: str, zip_path: Path, repo: str, notes: str |
     print("  • релиз должен быть опубликован (не Draft и не Pre-release);")
     print("  • тег новее установленной версии (сравниваются числа, v не важен);")
     print("  • к релизу прикреплён .zip (имя содержит «deadlock»);")
-    print("  • для приватного репозитория нужен GITHUB_TOKEN или github_token в config.json.")
+    print("  • публичному репозиторию токен не нужен (для приватного — GITHUB_TOKEN).")
 
 
 def publish_release(tag: str, zip_path: Path, repo: str, notes: str | None) -> None:

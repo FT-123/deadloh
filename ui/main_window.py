@@ -410,6 +410,7 @@ class DeadlockModManager(QMainWindow):
         self.vpk_editor_window: VPKEditorWindow | None = None
         self.gb_search_worker: GBSearchWorker | None = None
         self.gb_download_worker: GBDownloadWorker | None = None
+        self.update_download_worker: UpdateDownloadWorker | None = None
         self.deploy_silent = False
         self.heal_target = None
         self.tags_skip = set()
@@ -430,18 +431,25 @@ class DeadlockModManager(QMainWindow):
             self.gb_window.shutdown()
         if self.vpk_editor_window is not None:
             self.vpk_editor_window.shutdown()
+        model_worker = getattr(self, "model_preview_worker", None)
         workers = (
             self.import_worker, self.scan_worker, self.deploy_worker,
             self.heal_worker, self.heal_all_worker, self.tags_worker,
             self.gb_search_worker, self.gb_download_worker,
+            self.update_download_worker, model_worker,
         )
         running = [w for w in workers if w and w.isRunning()]
         if running:
             self.statusBar().showMessage("⏳ Завершение текущей операции перед выходом...")
             for worker in running:
-                # Сетевые операции не должны блокировать выход навсегда:
-                # скачивание отменяется, поиск по таймауту, затем поток снимается.
-                if worker is self.gb_download_worker or worker is self.gb_search_worker:
+                # Сетевые операции и экспорт модели не должны блокировать выход
+                # навсегда: ждём ограниченно, затем снимаем поток.
+                if worker in (
+                    self.gb_download_worker,
+                    self.gb_search_worker,
+                    self.update_download_worker,
+                    model_worker,
+                ):
                     if not worker.wait(3000):
                         worker.terminate()
                         worker.wait(1000)
@@ -536,6 +544,7 @@ class DeadlockModManager(QMainWindow):
             worker = UpdateDownloadWorker(url, dest, self)
             worker.progress_changed.connect(self._on_download_progress)
             worker.finished.connect(lambda p, ok: self._on_dev_install_finished(p, ok, release))
+        self.update_download_worker = worker
         worker.start()
 
     def _on_download_progress(self, received: int, total: int) -> None:
@@ -568,8 +577,13 @@ class DeadlockModManager(QMainWindow):
             QMessageBox.warning(self, "Обновление", f"Не удалось подготовить установку: {exc}")
             return
 
-        self.statusBar().showMessage("✅ Обновление скачано. Перезапуск…")
-        QTimer.singleShot(600, lambda: QApplication.quit())
+        self.statusBar().showMessage("✅ Обновление скачано. Приложение закроется и перезапустится…")
+        QTimer.singleShot(800, self._quit_for_update)
+
+    def _quit_for_update(self) -> None:
+        """Полностью закрывает приложение, чтобы helper заменил exe/DLL и открыл его заново."""
+        self.close()  # closeEvent останавливает окна и фоновые потоки
+        QApplication.quit()
 
     def _on_dev_install_finished(self, path_str: str, ok: bool, release: ReleaseInfo) -> None:
         """Завершение скачивания в dev-режиме (без two-phase установки)."""

@@ -3,13 +3,13 @@
 Модуль не зависит от PySide6 — вся логика чистая, её можно тестировать без GUI.
 
 Канал релизов: GitHub Releases для репозитория (по умолчанию ``FT-123/deadloh``).
-Для закрытого репозитория задайте токен через переменную окружения ``GITHUB_TOKEN``
-или поле ``github_token`` в ``config.json``. Репозиторий можно переопределить полем
-``release_repo`` в ``config.json``.
+Публичный репозиторий работает без токена. Для приватного можно задать токен
+через переменную окружения ``GITHUB_TOKEN`` или поле ``github_token`` в
+``config.json``; репозиторий переопределяется полем ``release_repo``.
 
-Установка (frozen-сборка) — двухфазная: скачиваем zip в AppData, пишем маркер
-отложенного обновления и завершаем процесс; при следующем запуске ``main.py``
-извлекает архив поверх папки установки и перезапускает приложение.
+Установка (frozen-сборка) — helper-процесс: приложение скачивает zip, запускает
+``install_update.bat`` и закрывается; helper ждёт выхода, распаковывает архив и
+заново открывает приложение.
 """
 
 import json
@@ -144,6 +144,18 @@ def _read_repo() -> str:
     return repo or DEFAULT_REPO
 
 
+def _fetch_json(url: str, headers: dict, timeout: int = 15) -> dict:
+    request = urllib.request.Request(url, headers=headers, method="GET")
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def _release_error(code: int) -> str:
+    if code == 404:
+        return "Не найдено ни одного релиза. Создайте GitHub Release с файлом сборки."
+    return f"Ошибка API ({code}): не удалось получить данные о последнем релизе."
+
+
 def fetch_latest_release(repo: str | None = None, token: str | None = None):
     """Запрашивает последний GitHub Release.
 
@@ -156,17 +168,25 @@ def fetch_latest_release(repo: str | None = None, token: str | None = None):
         "Accept": "application/vnd.github+json",
         "User-Agent": USER_AGENT,
     }
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
 
-    request = urllib.request.Request(url, headers=headers, method="GET")
+    # Публичный репозиторий не требует токена, поэтому сначала идём без него.
+    # Токен пробуем только если без него не пустили (401/403/404) — так
+    # устаревший токен не ломает доступ к публичному репозиторию.
     try:
-        with urllib.request.urlopen(request, timeout=15) as response:
-            data = json.loads(response.read().decode("utf-8"))
+        data = _fetch_json(url, headers)
     except urllib.error.HTTPError as exc:
-        if exc.code == 404:
-            return None, "Не найдено ни одного релиза. Создайте GitHub Release с файлом сборки."
-        return None, f"Ошибка API ({exc.code}): не удалось получить данные о последнем релизе."
+        code = exc.code
+        exc.close()
+        if not (token and code in (401, 403, 404)):
+            return None, _release_error(code)
+        try:
+            data = _fetch_json(url, {**headers, "Authorization": f"Bearer {token}"})
+        except urllib.error.HTTPError as auth_exc:
+            auth_code = auth_exc.code
+            auth_exc.close()
+            return None, _release_error(auth_code)
+        except Exception:  # noqa: BLE001 — сеть/API могут упасть
+            return None, "Не удалось проверить обновления (проверьте подключение к интернету)."
     except Exception:  # noqa: BLE001 — сеть/API могут упасть
         return None, "Не удалось проверить обновления (проверьте подключение к интернету)."
 
@@ -270,23 +290,41 @@ def download_asset(
 ) -> bool:
     """Скачивает ``url`` в ``dest`` (атомарно через .tmp). Возвращает True при успехе.
 
-    Для приватного репозитория токен берётся из окружения/конфига и
-    добавляется в запрос; при редиректе на CDN заголовок снимается.
+    Публичный репозиторий скачивается без токена. Для приватного токен
+    берётся из окружения/конфига и пробуется только при отказе; при редиректе
+    на CDN заголовок снимается.
     """
     dest = Path(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_name(dest.name + ".tmp")
-    headers = {
+    token = token or _read_token()
+    base_headers = {
         "Accept": "*/*",
         "User-Agent": USER_AGENT,
     }
-    token = token or _read_token()
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    request = urllib.request.Request(url, headers=headers, method="GET")
     opener = urllib.request.build_opener(_SafeRedirectHandler)
+
+    def _open(extra: dict | None = None):
+        headers = base_headers if not extra else {**base_headers, **extra}
+        request = urllib.request.Request(url, headers=headers, method="GET")
+        return opener.open(request, timeout=DOWNLOAD_TIMEOUT_SECONDS)
+
     try:
-        with opener.open(request, timeout=DOWNLOAD_TIMEOUT_SECONDS) as response:
+        response = _open()
+    except urllib.error.HTTPError as exc:
+        code = exc.code
+        exc.close()
+        if not (token and code in (401, 403, 404)):
+            return False
+        try:
+            response = _open({"Authorization": f"Bearer {token}"})
+        except Exception:  # noqa: BLE001 — сеть может упасть
+            return False
+    except Exception:  # noqa: BLE001 — сеть может упасть
+        return False
+
+    try:
+        with response:
             total = 0
             headers = getattr(response, "headers", None)
             if headers is not None:
@@ -344,12 +382,15 @@ def build_update_helper_script(
         f'set "MARKER={Path(marker_path)}"',
         f'set "ERROR_FILE={Path(error_path)}"',
         "",
-        ":wait",
-        '>nul 2>&1 tasklist /FI "PID eq %APP_PID%" | find "%APP_PID%"',
-        "if not errorlevel 1 (",
+        # Ждём выхода приложения, но не дольше ~5 минут.
+        "for /l %%i in (1,1,300) do (",
+        '    >nul 2>&1 tasklist /FI "PID eq %APP_PID%" | find "%APP_PID%"',
+        "    if errorlevel 1 goto app_exited",
         "    >nul ping -n 2 127.0.0.1",
-        "    goto wait",
         ")",
+        'if exist "%MARKER%" del "%MARKER%" >nul 2>&1',
+        "exit /b 1",
+        ":app_exited",
         ">nul ping -n 2 127.0.0.1",
         'if exist "%ERROR_FILE%" del "%ERROR_FILE%" >nul 2>&1',
         'tar -xf "%ZIP_PATH%" -C "%INSTALL_DIR%"',

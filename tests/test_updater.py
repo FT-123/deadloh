@@ -171,7 +171,7 @@ def test_fetch_latest_release_no_assets(monkeypatch):
     assert release.download_url == "https://github.com/FT-123/deadloh/releases/tag/v2.0"
 
 
-def test_fetch_latest_release_uses_env_token(monkeypatch):
+def test_fetch_latest_release_public_does_not_send_token(monkeypatch):
     import core.updater as _up
 
     captured = {}
@@ -198,10 +198,47 @@ def test_fetch_latest_release_uses_env_token(monkeypatch):
 
     _release, error = _up.fetch_latest_release(repo="owner/repo")
     assert error is None
-    assert captured["auth"] == "Bearer secret"
+    # Публичный репозиторий: токен не нужен и не отправляется.
+    assert captured["auth"] is None
 
 
-def test_download_asset_uses_env_token_and_writes_file(tmp_path, monkeypatch):
+def test_fetch_latest_release_retries_with_env_token(monkeypatch):
+    import io
+
+    import core.updater as _up
+
+    calls = []
+
+    class FakeResp:
+        def __init__(self):
+            self.headers = {"Content-Length": "0"}
+
+        def read(self):
+            return b'{"tag_name":"2.0","name":"v2.0","html_url":"https://x","assets":[]}'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    def fake_urlopen(request, timeout=15):
+        calls.append(request.get_header("Authorization"))
+        if len(calls) == 1:
+            raise _up.urllib.error.HTTPError(
+                request.full_url, 404, "Not Found", {}, io.BytesIO(b"")
+            )
+        return FakeResp()
+
+    monkeypatch.setenv("GITHUB_TOKEN", "secret")
+    monkeypatch.setattr(_up.urllib.request, "urlopen", fake_urlopen)
+
+    _release, error = _up.fetch_latest_release(repo="owner/private")
+    assert error is None
+    assert calls == [None, "Bearer secret"]
+
+
+def test_download_asset_public_does_not_send_token(tmp_path, monkeypatch):
     import core.updater as _up
 
     captured = {}
@@ -234,7 +271,49 @@ def test_download_asset_uses_env_token_and_writes_file(tmp_path, monkeypatch):
     dest = tmp_path / "update.zip"
     assert _up.download_asset("https://example.invalid/update.zip", dest) is True
     assert dest.read_bytes() == b"payload"
-    assert captured["auth"] == "Bearer secret"
+    assert captured["auth"] is None
+
+
+def test_download_asset_retries_with_token(tmp_path, monkeypatch):
+    import io
+
+    import core.updater as _up
+
+    calls = []
+
+    class FakeResponse:
+        def __init__(self):
+            self._data = b"payload"
+            self.headers = {"Content-Length": str(len(self._data))}
+
+        def read(self, size=65536):
+            chunk, self._data = self._data[:size], self._data[size:]
+            return chunk
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    class FakeOpener:
+        def open(self, request, timeout=None):
+            calls.append(request.get_header("Authorization"))
+            if len(calls) == 1:
+                raise _up.urllib.error.HTTPError(
+                    request.full_url, 404, "Not Found", {}, io.BytesIO(b"")
+                )
+            return FakeResponse()
+
+    monkeypatch.setenv("GITHUB_TOKEN", "secret")
+    monkeypatch.setattr(
+        _up.urllib.request, "build_opener", lambda *args, **kwargs: FakeOpener()
+    )
+
+    dest = tmp_path / "update.zip"
+    assert _up.download_asset("https://example.invalid/update.zip", dest) is True
+    assert dest.read_bytes() == b"payload"
+    assert calls == [None, "Bearer secret"]
 
 
 def test_update_helper_script_is_ascii_and_extracts_after_exit(tmp_path):
@@ -252,6 +331,7 @@ def test_update_helper_script_is_ascii_and_extracts_after_exit(tmp_path):
     script.encode("ascii")  # helper должен быть ASCII-only для cmd
     assert 'set "APP_PID=1234"' in script
     assert "tasklist" in script
+    assert "goto app_exited" in script
     assert "tar -xf" in script
     assert "powershell" in script
     assert "--update-installed" in script
