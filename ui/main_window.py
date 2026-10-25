@@ -1,11 +1,14 @@
 import json
+import sys
 from pathlib import Path
 
-from PySide6.QtCore import QSize, Qt, QThread, QUrl, Signal
+from PySide6.QtCore import QSize, Qt, QTimer, QThread, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
+    QApplication,
     QButtonGroup,
     QComboBox,
+    QDialog,
     QFileDialog,
     QHBoxLayout,
     QLabel,
@@ -27,7 +30,14 @@ from core.gameinfo import is_gameinfo_patched, patch_gameinfo_file
 from core.jsonio import write_json_atomic
 from core.locator import detect_deadlock_path
 from core.model_exporter import export_vpk_model_to_glb
-from core.paths import CONFIG_PATH, STAGING_DIR, ensure_data_dir
+from core.paths import APP_DATA_DIR, CONFIG_PATH, STAGING_DIR, ensure_data_dir
+from core.updater import (
+    APP_VERSION,
+    DEFAULT_REPO,
+    ReleaseInfo,
+    UpdateResult,
+    check_for_update,
+)
 from core.vpk_fixer import check_mod_stale, get_vpkmerge_path, heal_mod_vpk
 from core.vpk_parser import analyze_vpk
 
@@ -271,6 +281,113 @@ class ModelPreviewWorker(QThread):
         self.preview_ready.emit(self.folder_name, ok, str(glb_path) if glb_path else "", err)
 
 
+class UpdateCheckWorker(QThread):
+    """Фоновая проверка наличия новой версии приложения."""
+
+    finished = Signal(object)  # UpdateResult
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+
+    def run(self) -> None:
+        try:
+            result = check_for_update()
+        except Exception as exc:  # noqa: BLE001 — сообщение об ошибке уходит в UI
+            result = UpdateResult(current_version=APP_VERSION, error=f"Ошибка проверки обновлений: {exc}")
+        self.finished.emit(result)
+
+
+class UpdateDownloadWorker(QThread):
+    """Фоновое скачивание файла обновления с прогрессом."""
+
+    finished = Signal(str, bool)  # dest_path, ok
+    progress_changed = Signal(int, int)  # (получено байт, всего; 0 — размер неизвестен)
+
+    def __init__(self, url: str, dest: Path, parent=None):
+        super().__init__(parent)
+        self._url = url
+        self._dest = Path(dest)
+
+    def _on_progress(self, received: int, total: int) -> None:
+        self.progress_changed.emit(received, total)
+
+    def run(self) -> None:
+        from core.updater import download_asset
+
+        ok = download_asset(self._url, self._dest, progress_callback=self._on_progress)
+        self.finished.emit(str(self._dest), ok)
+
+
+class UpdateDialog(QDialog):
+    """Диалог проверки обновлений: показывает версию и предлагает действия."""
+
+    install_requested = Signal(str)  # download_url
+    open_page_requested = Signal(str)  # html_url / repo page
+
+    def __init__(self, result: UpdateResult, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Обновление")
+        self.setModal(True)
+        self._result = result
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 18, 20, 18)
+        layout.setSpacing(10)
+
+        title = QLabel("🔄 Обновление")
+        title.setStyleSheet("font-size: 16px; font-weight: bold; color: #a8c7fa;")
+        layout.addWidget(title)
+
+        self._info_label = QLabel("")
+        self._info_label.setWordWrap(True)
+        self._info_label.setStyleSheet("color: rgba(255, 255, 255, 0.8); line-height: 1.4;")
+        layout.addWidget(self._info_label)
+
+        btn_install = QPushButton("⬇ Скачать и установить")
+        btn_install.setObjectName("primaryBtn")
+        btn_install.setCursor(Qt.PointingHandCursor)
+        btn_install.clicked.connect(self._install_clicked)
+        layout.addWidget(btn_install)
+
+        btn_page = QPushButton("🌐 Открыть страницу релизов")
+        btn_page.setObjectName("ghostBtn")
+        btn_page.setCursor(Qt.PointingHandCursor)
+        btn_page.clicked.connect(self._page_clicked)
+        layout.addWidget(btn_page)
+
+        self._build_info()
+
+    def _build_info(self) -> None:
+        result = self._result
+        if result.release is not None and result.is_newer:
+            text = (
+                f"Доступна новая версия приложения.\n\n"
+                f"Текущая: v{result.current_version}\n"
+                f"Новая:    v{result.latest_version}"
+            )
+        else:
+            text = f"Вы на последней версии (v{result.current_version})."
+        self._info_label.setText(text)
+
+    def _install_clicked(self) -> None:
+        result = self._result
+        url = result.release.download_url if result.release is not None else ""
+        self.install_requested.emit(url)
+        self.accept()
+
+    def _page_clicked(self) -> None:
+        result = self._result
+        url = ""
+        if result.release is not None and result.release.html_url:
+            url = result.release.html_url
+        elif result.error:
+            # нет релизов — открываем страницу репозитория
+            from core.updater import DEFAULT_REPO
+
+            url = f"https://github.com/{DEFAULT_REPO}/releases"
+        self.open_page_requested.emit(url)
+        self.accept()
+
+
 class DeadlockModManager(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -346,6 +463,133 @@ class DeadlockModManager(QMainWindow):
 
     def _show_busy(self):
         self.statusBar().showMessage("⏳ Дождитесь завершения текущей операции", 4000)
+
+    # ── Обновление приложения ───────────────────────────────────────────────
+
+    def start_check_update(self) -> None:
+        """Запускает фоновую проверку наличия новой версии."""
+        if self._is_busy():
+            self._show_busy()
+            return
+        self.btn_update.setEnabled(False)
+        self.statusBar().showMessage("⏳ Проверяю обновления…", 0)
+        worker = UpdateCheckWorker(self)
+        worker.finished.connect(self.on_check_update_finished)
+        worker.start()
+
+    def on_check_update_finished(self, result: UpdateResult) -> None:
+        """Обрабатывает результат проверки обновлений."""
+        self.btn_update.setEnabled(True)
+        self.statusBar().clearMessage()
+        if result.error is not None:
+            self._show_update_error(result.error)
+            return
+        if not result.is_newer:
+            QMessageBox.information(
+                self, "Обновления", f"✅ Вы на последней версии (v{result.current_version})."
+            )
+            return
+        dialog = UpdateDialog(result, self)
+        dialog.install_requested.connect(lambda url: self._perform_install(url, result))
+        dialog.open_page_requested.connect(self._open_url)
+        dialog.exec()
+
+    def _show_update_error(self, message: str) -> None:
+        """Показывает ошибку проверки и предлагает открыть страницу релизов."""
+        reply = QMessageBox.question(
+            self,
+            "Обновления",
+            f"⚠️ {message}\n\nОткрыть страницу релизов в браузере?",
+            buttons=(QMessageBox.Yes, QMessageBox.No),
+            defaultButton=QMessageBox.Yes,
+        )
+        if reply == QMessageBox.Yes:
+            self._open_url(f"https://github.com/{DEFAULT_REPO}/releases")
+
+    def _install_dir(self) -> Path | None:
+        """Папка установки для frozen-сборки (None в dev-режиме)."""
+        if getattr(sys, "frozen", False):
+            return Path(sys.executable).resolve().parent
+        return None
+
+    def _perform_install(self, url: str, result: UpdateResult) -> None:
+        """Скачивает обновление и устанавливает его (two-phase для frozen-сборки)."""
+        if not url or result.release is None:
+            self._open_url(f"https://github.com/{DEFAULT_REPO}/releases")
+            return
+
+        release = result.release
+        frozen = getattr(sys, "frozen", False)
+
+        dest_name = release.asset_name or f"deadlock_{result.latest_version}.zip"
+        dest = APP_DATA_DIR / "update" / dest_name
+
+        self.btn_update.setEnabled(False)
+        if frozen and release.is_zip:
+            self.statusBar().showMessage("⏳ Скачиваю обновление…", 0)
+            worker = UpdateDownloadWorker(url, dest, self)
+            worker.progress_changed.connect(self._on_download_progress)
+            worker.finished.connect(lambda p, ok: self._on_frozen_install_finished(p, ok, release))
+        else:
+            self.statusBar().showMessage("⏳ Скачиваю…", 0)
+            worker = UpdateDownloadWorker(url, dest, self)
+            worker.progress_changed.connect(self._on_download_progress)
+            worker.finished.connect(lambda p, ok: self._on_dev_install_finished(p, ok, release))
+        worker.start()
+
+    def _on_download_progress(self, received: int, total: int) -> None:
+        if total > 0:
+            pct = max(0, min(100, int(received * 100 / total)))
+            self.statusBar().showMessage(f"⏳ Скачиваю обновление… {pct}%", 0)
+
+    def _on_frozen_install_finished(self, path_str: str, ok: bool, release: ReleaseInfo) -> None:
+        """Завершение скачивания для frozen-сборки: маркер + перезапуск."""
+        self.btn_update.setEnabled(True)
+        self.statusBar().clearMessage()
+        if not ok:
+            QMessageBox.warning(
+                self, "Обновление", "Не удалось скачать обновление. Попробуйте позже или откройте страницу релизов."
+            )
+            return
+
+        install_dir = self._install_dir() or Path("")
+        try:
+            from core.updater import write_pending_update
+
+            write_pending_update(path_str, install_dir, release.version)
+        except Exception as exc:  # noqa: BLE001 — не теряем скачанное обновление молча
+            QMessageBox.warning(self, "Обновление", f"Не удалось подготовить установку: {exc}")
+            return
+
+        self.statusBar().showMessage("✅ Обновление скачано. Перезапуск…")
+        QTimer.singleShot(600, lambda: QApplication.quit())
+
+    def _on_dev_install_finished(self, path_str: str, ok: bool, release: ReleaseInfo) -> None:
+        """Завершение скачивания в dev-режиме (без two-phase установки)."""
+        self.btn_update.setEnabled(True)
+        self.statusBar().clearMessage()
+        if not ok:
+            QMessageBox.warning(
+                self, "Обновление", "Не удалось скачать файл. Попробуйте позже или откройте страницу релизов."
+            )
+            return
+
+        path = Path(path_str)
+        reply = QMessageBox.question(
+            self,
+            "Скачано",
+            f"Файл обновления скачан:\n{path}\n\nОткрыть папку?",
+            buttons=(QMessageBox.Yes, QMessageBox.No),
+            defaultButton=QMessageBox.Yes,
+        )
+        if reply == QMessageBox.Yes:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.parent)))
+
+    def _open_url(self, url: str) -> None:
+        """Открывает URL в системном браузере."""
+        if not url:
+            return
+        QDesktopServices.openUrl(QUrl(url))
 
     def init_game_path(self):
         self.load_config()
@@ -426,6 +670,13 @@ class DeadlockModManager(QMainWindow):
         )
         self.btn_vpk_edit.clicked.connect(self.open_vpk_editor_window)
         header_row.addWidget(self.btn_vpk_edit)
+
+        self.btn_update = QPushButton("🔄 Обновить")
+        self.btn_update.setObjectName("ghostBtn")
+        self.btn_update.setCursor(Qt.PointingHandCursor)
+        self.btn_update.setToolTip("Проверить наличие новой версии приложения")
+        self.btn_update.clicked.connect(self.start_check_update)
+        header_row.addWidget(self.btn_update)
 
         btn_folder = QPushButton("📁")
         btn_folder.setObjectName("iconBtn")
@@ -608,6 +859,7 @@ class DeadlockModManager(QMainWindow):
                 "btn_fix_all",
                 "btn_gb",
                 "btn_vpk_edit",
+                "btn_update",
                 "btn_status_patch",
             )
         ):
@@ -620,6 +872,7 @@ class DeadlockModManager(QMainWindow):
         self.btn_fix_all.setText("🔧" if compact else "🔧 Починить все")
         self.btn_gb.setText("🌐" if compact else "🌐 GameBanana")
         self.btn_vpk_edit.setText("🧩" if compact else "🧩 VPK-редактор")
+        self.btn_update.setText("🔄" if compact else "🔄 Обновить")
         self.update_header_status()
 
 
