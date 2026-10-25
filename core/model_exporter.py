@@ -1,21 +1,26 @@
 # core/model_exporter.py
-import os
 import subprocess
 import sys
 from pathlib import Path
 
+from .paths import BASE_DIR
+
 
 def get_s2v_cli_path() -> Path | None:
-    """Ищет Source2Viewer-CLI.exe в корне проекта или в tools/."""
-    base = Path(sys.argv[0]).resolve().parent
+    """Ищет Source2Viewer-CLI.exe в tools/, корне и _internal (onedir)."""
     candidates = [
-        base / "Source2Viewer-CLI.exe",
-        base / "tools" / "Source2Viewer-CLI.exe",
+        BASE_DIR / "tools" / "Source2Viewer-CLI.exe",
+        BASE_DIR / "Source2Viewer-CLI.exe",
+        BASE_DIR / "_internal" / "Source2Viewer-CLI.exe",
+        Path(sys.argv[0]).resolve().parent / "Source2Viewer-CLI.exe",
         Path.cwd() / "Source2Viewer-CLI.exe",
     ]
-    for c in candidates:
-        if c.exists():
-            return c
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        candidates.append(Path(meipass) / "Source2Viewer-CLI.exe")
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
     return None
 
 

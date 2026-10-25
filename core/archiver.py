@@ -22,8 +22,10 @@ except ImportError:
 try:
     import rarfile
 
-    # Приоритет поиска unrar.exe: портативный (корень, _internal, временная папка PyInstaller), затем системный
+    # Приоритет поиска unrar.exe: портативный (tools/, корень, _internal, временная папка PyInstaller), затем системный
     possible_unrar_paths = [
+        BASE_DIR / "tools" / "unrar.exe",
+        BASE_DIR / "tools" / "UnRAR.exe",
         BASE_DIR / "unrar.exe",
         BASE_DIR / "UnRAR.exe",
         BASE_DIR / "_internal" / "unrar.exe",

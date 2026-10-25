@@ -538,7 +538,74 @@ QToolTip {
     font-size: 11px;
 }
 
+/* ── Редактор VPK ────────────────────────────────────────── */
+
+QFrame#editorPanel {
+    background-color: #1e1f20;
+    border: 1px solid #303134;
+    border-radius: 20px;
+}
+
+QLabel#previewImage {
+    background-color: #101113;
+    border: 1px solid #303134;
+    border-radius: 14px;
+}
+
+QLabel#previewStatus {
+    background-color: #131314;
+    border: 1px dashed #303134;
+    border-radius: 14px;
+    color: #9aa0a6;
+    font-size: 12px;
+    padding: 12px;
+}
+
+QPlainTextEdit#previewText {
+    background-color: #131314;
+    border: 1px solid #303134;
+    border-radius: 14px;
+    color: #c4c7c5;
+    font-family: 'Consolas';
+    font-size: 11px;
+    padding: 8px;
+}
+
+QSplitter#contentSplitter::handle {
+    background: transparent;
+    width: 8px;
+}
+
+QSplitter#contentSplitter::handle:hover {
+    background-color: #303134;
+    border-radius: 4px;
+}
+
+QListWidget#resourceList {
+    background: transparent;
+    border: none;
+    outline: 0;
+}
+
+QListWidget#resourceList::item {
+    border-radius: 10px;
+    padding: 6px 10px;
+    color: #c4c7c5;
+}
+
+QListWidget#resourceList::item:hover {
+    background-color: #1e1f20;
+    color: #e3e3e3;
+}
+
+QListWidget#resourceList::item:selected {
+    background-color: #282a2c;
+    color: #e3e3e3;
+    border: 1px solid #444746;
+}
+
 /* ── GameBanana ──────────────────────────────────────────── */
+
 
 QFrame#gbDetails {
     background-color: #1e1f20;

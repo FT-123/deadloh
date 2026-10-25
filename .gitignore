@@ -1,17 +1,72 @@
-# Python
+# ── Python ────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
 .venv/
+venv/
+env/
+.python-version
+.env
+.env.*
+!.env.example
+
+# ── Кеши тестов, линтеров и покрытия ──────────────────────
 .pytest_cache/
 .ruff_cache/
-tools/
+.mypy_cache/
+.pyright/
+.cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.tox/
+.nox/
+test-results/
 
-# Build / packaging artifacts
+# ── Сборка и упаковка ─────────────────────────────────────
 build/
 dist/
 *.spec
+*.egg-info/
+pip-wheel-metadata/
 
-# Agent instructions and tooling (local-only, not for GitHub)
+# ── Внешние бинарники (распространяются отдельно) ─────────
+tools/
+
+# ── Локальное состояние приложения (регенерируется) ───────
+config.json
+deployed_state.json
+staging/
+tmp_staging/
+.preview_cache/
+*.bak
+*.orig
+
+# ── Логи и аварийные дампы ────────────────────────────────
+*.log
+*.mdmp
+*.dmp
+
+# ── Временные файлы ───────────────────────────────────────
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+~$*
+
+# ── Windows / macOS ───────────────────────────────────────
+Thumbs.db
+ehthumbs.db
+desktop.ini
+.DS_Store
+
+# ── IDE ───────────────────────────────────────────────────
+.idea/
+.vscode/
+.fleet/
+
+# ── Локальные инструкции и агентские инструменты ──────────
 AGENTS.md
 PROJECT_MAP.md
 .serena/
@@ -19,17 +74,5 @@ PROJECT_MAP.md
 mcp_servers/
 docs/serena_intro.html
 
-# IDE
-.idea/
-
-# Local runtime state (regenerated or machine-specific)
-config.json
-deployed_state.json
-staging/
-
-# Local tooling indexes
+# ── Локальные индексы анализаторов ────────────────────────
 .codexray/
-
-# OS
-Thumbs.db
-desktop.ini

@@ -10,8 +10,9 @@ NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
 
 
 def get_vpkmerge_path() -> Path | None:
-    """Ищет vpkmerge.exe в корне, _internal или временной папке PyInstaller"""
+    """Ищет vpkmerge.exe в tools/, корне, _internal или временной папке PyInstaller"""
     candidates = [
+        BASE_DIR / "tools" / "vpkmerge.exe",
         BASE_DIR / "vpkmerge.exe",
         BASE_DIR / "_internal" / "vpkmerge.exe",
     ]

@@ -119,7 +119,13 @@ def main() -> int:
 
     # 3. Тесты (offscreen: без окон и без фокуса на рабочем столе)
     if not args.no_tests:
-        test_env = {**os.environ, "QT_QPA_PLATFORM": "offscreen"}
+        test_env = {
+            **os.environ,
+            "QT_QPA_PLATFORM": "offscreen",
+            # Без этого Qt на выходе иногда падает до сброса буфера pytest,
+            # и вместо итоговой строки в лог попадает только faulthandler.
+            "PYTHONUNBUFFERED": "1",
+        }
         tests = _run([python, "-m", "pytest"], env=test_env)
         output = (tests.stdout or "") + (tests.stderr or "")
         lines = [line.strip() for line in output.splitlines() if line.strip()]

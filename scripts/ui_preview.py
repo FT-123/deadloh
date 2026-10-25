@@ -3,7 +3,8 @@
 Запуск: python scripts/ui_preview.py [--out build/ui_preview.png]
 
 Скрипт рендерит окна в offscreen-режиме (ничего не показывается на экране):
-главное окно в обычном и узком виде, пустое состояние и окно GameBanana.
+главное окно в обычном и узком виде, пустое состояние, окно GameBanana и
+редактор VPK (если установлена библиотека ``vpk``).
 Данные фиктивные, сеть и реальная папка staging не затрагиваются.
 Результат — одна картинка: дешевле и быстрее, чем серия отдельных скриншотов.
 """
@@ -15,7 +16,7 @@ import os
 import shutil
 import sys
 import tempfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -48,6 +49,24 @@ GB_NAMES = (
     "Bebop Chrome Arms",
     "Ivy Living Garden",
 )
+
+SAMPLE_VPK_FILES = {
+    "materials/models/heroes/haze/haze_body.vmat_c": b"MATERIAL",
+    "materials/models/heroes/haze/haze_eyes.vmat_c": b"MATERIAL-EYES",
+    "models/heroes/haze/haze_body.vmdl_c": b"MODEL",
+    "particles/hero/haze/ability3_smoke.vpcf_c": b"PARTICLE",
+    "sounds/hero/haze/ability3_cast.vsnd_c": b"SOUND",
+    "sounds/hero/haze/vo/attack_01.vsnd_c": b"VOICE",
+    "scripts/preview_readme.txt": (
+        b"Deadlock mod notes\n"
+        b"------------------\n"
+        b"textures: artist_hair_ao / artist_hair_color\n"
+        b"model: models/heroes_wip/artist/artist.vmdl_c\n"
+        b"build: save as a new .vpk, source stays untouched\n"
+    ),
+}
+SAMPLE_VPK_SOUND = "sounds/hero/haze/ability3_cast.vsnd_c"
+SAMPLE_VPK_TEXT = "scripts/preview_readme.txt"
 
 
 def _register_fonts() -> None:
@@ -84,6 +103,33 @@ def _build_fixture(base: Path) -> tuple[Path, Path, Path]:
             encoding="utf-8",
         )
     return staging, empty, game
+
+
+def _build_sample_vpk(base: Path) -> Path | None:
+    """Собирает настоящий VPK для превью редактора (нужна библиотека ``vpk``)."""
+    try:
+        import vpk
+    except ImportError:
+        return None
+    source = base / "vpk_source"
+    for relative, data in SAMPLE_VPK_FILES.items():
+        target = source / Path(*PurePosixPath(relative).parts)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+    output = base / "haze_recolor.vpk"
+    writer = vpk.new(str(source))
+    writer.version = 2
+    writer.save(str(output))
+    return output
+
+
+def _wait_until(predicate, attempts: int = 200, delay_ms: int = 20) -> bool:
+    """Крутит очередь событий Qt, пока условие не выполнится."""
+    for _ in range(attempts):
+        if predicate():
+            return True
+        QTest.qWait(delay_ms)
+    return predicate()
 
 
 def _patch_modules(staging: Path, game: Path):
@@ -224,10 +270,12 @@ def main() -> int:
 
     temp_dir = Path(tempfile.mkdtemp(prefix="dmm-preview-"))
     gb_window = None
+    editor_window = None
     window = None
     try:
         staging, empty, game = _build_fixture(temp_dir)
         mw, gbw = _patch_modules(staging, game)
+        sample_vpk = _build_sample_vpk(temp_dir)
 
         shots: list[tuple[str, QPixmap]] = []
 
@@ -260,9 +308,38 @@ def main() -> int:
         QTest.qWait(200)
         shots.append(("GameBanana", gb_window.grab()))
 
+        if sample_vpk is not None:
+            import ui.vpk_editor_window as vpkw
+
+            editor_window = vpkw.VPKEditorWindow(window)
+            editor_window.resize(1060, 720)
+            editor_window.show()
+            editor_window.start_open(sample_vpk)
+            _wait_until(
+                lambda: editor_window._project is not None
+                and not editor_window._busy
+            )
+            replacement = temp_dir / "custom.vsnd_c"
+            replacement.write_bytes(b"CUSTOM-SOUND")
+            editor_window.start_replace(SAMPLE_VPK_SOUND, replacement)
+            _wait_until(lambda: not editor_window._busy)
+            for row in range(editor_window.resource_list.count()):
+                item = editor_window.resource_list.item(row)
+                if str(item.data(Qt.ItemDataRole.UserRole)) == SAMPLE_VPK_TEXT:
+                    editor_window.resource_list.setCurrentRow(row)
+                    break
+            _wait_until(
+                lambda: editor_window.preview_stack.currentWidget()
+                is editor_window.preview_text
+            )
+            QTest.qWait(150)
+            shots.append(("VPK-редактор", editor_window.grab()))
+
         width, height = _compose(shots, args.out)
         print(f"UI preview: {args.out} ({width}x{height})")
     finally:
+        if editor_window is not None:
+            editor_window.shutdown()
         if gb_window is not None:
             gb_window.shutdown()
         if window is not None:

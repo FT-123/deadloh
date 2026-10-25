@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 from PySide6.QtCore import QSize, Qt, QThread, QUrl, Signal
-from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut, QColor
+from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QButtonGroup,
     QComboBox,
@@ -20,20 +20,21 @@ from PySide6.QtWidgets import (
     QStackedLayout
 )
 
-from core.model_exporter import export_vpk_model_to_glb
-
 from core.archiver import extract_and_stage_archive, stage_vpk_file
 from core.constants import DEADLOCK_APP_ID, HEROES, VALID_EXTS, clean_display_name
 from core.deployer import deploy_active_mods, get_deployed_mods_set
 from core.gameinfo import is_gameinfo_patched, patch_gameinfo_file
 from core.jsonio import write_json_atomic
 from core.locator import detect_deadlock_path
+from core.model_exporter import export_vpk_model_to_glb
 from core.paths import CONFIG_PATH, STAGING_DIR, ensure_data_dir
 from core.vpk_fixer import check_mod_stale, get_vpkmerge_path, heal_mod_vpk
 from core.vpk_parser import analyze_vpk
 
 from .gamebanana_window import GameBananaWindow, GBDownloadWorker, GBSearchWorker
+from .model_viewer import create_model_viewer, model_viewer_html
 from .styles import apply_dark_titlebar, create_app_icon, load_stylesheet, refresh_style
+from .vpk_editor_window import VPKEditorWindow
 from .widgets import (
     AuroraHeader,
     DropListWidget,
@@ -266,17 +267,8 @@ class ModelPreviewWorker(QThread):
             return
 
         ok, glb_path, err = export_vpk_model_to_glb(vpk_path, cache_dir, self.game_path)
+
         self.preview_ready.emit(self.folder_name, ok, str(glb_path) if glb_path else "", err)
-
-
-from PySide6.QtWebEngineCore import QWebEnginePage
-
-
-class ModelViewerWebPage(QWebEnginePage):
-    """Перенаправляет console.log из браузера напрямую в консоль Python."""
-    def javaScriptConsoleMessage(self, level, message, line_number, source_id):
-        if message.startswith("[3D]"):
-            print(message)
 
 
 class DeadlockModManager(QMainWindow):
@@ -297,6 +289,7 @@ class DeadlockModManager(QMainWindow):
         self.heal_all_worker = None
         self.tags_worker = None
         self.gb_window: GameBananaWindow | None = None
+        self.vpk_editor_window: VPKEditorWindow | None = None
         self.gb_search_worker: GBSearchWorker | None = None
         self.gb_download_worker: GBDownloadWorker | None = None
         self.deploy_silent = False
@@ -317,6 +310,8 @@ class DeadlockModManager(QMainWindow):
         # Не даём Qt уничтожить работающий QThread (это аварийно завершает процесс).
         if self.gb_window is not None:
             self.gb_window.shutdown()
+        if self.vpk_editor_window is not None:
+            self.vpk_editor_window.shutdown()
         workers = (
             self.import_worker, self.scan_worker, self.deploy_worker,
             self.heal_worker, self.heal_all_worker, self.tags_worker,
@@ -328,7 +323,7 @@ class DeadlockModManager(QMainWindow):
             for worker in running:
                 # Сетевые операции не должны блокировать выход навсегда:
                 # скачивание отменяется, поиск по таймауту, затем поток снимается.
-                if worker is download or worker is self.gb_search_worker:
+                if worker is self.gb_download_worker or worker is self.gb_search_worker:
                     if not worker.wait(3000):
                         worker.terminate()
                         worker.wait(1000)
@@ -423,6 +418,14 @@ class DeadlockModManager(QMainWindow):
         self.btn_gb.setToolTip("Поиск и скачивание модов через GameBanana")
         self.btn_gb.clicked.connect(self.open_gb_window)
         header_row.addWidget(self.btn_gb)
+
+        self.btn_vpk_edit = QPushButton("🧩 VPK-редактор")
+        self.btn_vpk_edit.setCursor(Qt.PointingHandCursor)
+        self.btn_vpk_edit.setToolTip(
+            "Открыть VPK в отдельном окне: замена ресурсов и звуков"
+        )
+        self.btn_vpk_edit.clicked.connect(self.open_vpk_editor_window)
+        header_row.addWidget(self.btn_vpk_edit)
 
         btn_folder = QPushButton("📁")
         btn_folder.setObjectName("iconBtn")
@@ -600,7 +603,13 @@ class DeadlockModManager(QMainWindow):
         """На узком окне оставляет у кнопок только иконки — шапка не ломается."""
         if not all(
             hasattr(self, name)
-            for name in ("btn_check_mods", "btn_fix_all", "btn_gb", "btn_status_patch")
+            for name in (
+                "btn_check_mods",
+                "btn_fix_all",
+                "btn_gb",
+                "btn_vpk_edit",
+                "btn_status_patch",
+            )
         ):
             return
         compact = self.width() < 1040
@@ -610,6 +619,7 @@ class DeadlockModManager(QMainWindow):
         self.btn_check_mods.setText("🔍" if compact else "🔍 Проверить моды")
         self.btn_fix_all.setText("🔧" if compact else "🔧 Починить все")
         self.btn_gb.setText("🌐" if compact else "🌐 GameBanana")
+        self.btn_vpk_edit.setText("🧩" if compact else "🧩 VPK-редактор")
         self.update_header_status()
 
 
@@ -618,6 +628,15 @@ class DeadlockModManager(QMainWindow):
         if self.gb_window is None:
             self.gb_window = GameBananaWindow(self)
         window = self.gb_window
+        window.show()
+        window.raise_()
+        window.activateWindow()
+
+    def open_vpk_editor_window(self) -> None:
+        """Открывает (или поднимает) отдельное окно редактора VPK."""
+        if self.vpk_editor_window is None:
+            self.vpk_editor_window = VPKEditorWindow(self)
+        window = self.vpk_editor_window
         window.show()
         window.raise_()
         window.activateWindow()
@@ -1377,21 +1396,7 @@ class DeadlockModManager(QMainWindow):
         if self.web_view is not None:
             return self.web_view
 
-        from PySide6.QtWebEngineCore import QWebEngineSettings
-        from PySide6.QtWebEngineWidgets import QWebEngineView
-
-        view = QWebEngineView()
-        # Подключаем перехватчик консоли в Python
-        view.setPage(ModelViewerWebPage(view))
-
-        view.setAttribute(Qt.WidgetAttribute.WA_NativeWindow, True)
-        view.setStyleSheet("background: transparent; border-radius: 10px;")
-        view.page().setBackgroundColor(QColor("#17191e"))
-
-        settings = view.settings()
-        settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessFileUrls, True)
-        settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, True)
-
+        view = create_model_viewer(self)
         self.web_view = view
         self.preview_stack.addWidget(view)
         return view
@@ -1408,90 +1413,10 @@ class DeadlockModManager(QMainWindow):
 
         # Модель готова — загружаем в <model-viewer>
         glb_path = Path(glb_path_str)
-        file_url = QUrl.fromLocalFile(str(glb_path)).toString()
 
         print(f"[DEBUG] Загружаем GLB файл: {glb_path_str} (Размер: {glb_path.stat().st_size} байт)")
 
-        html = f"""
-                <!DOCTYPE html>
-                <html>
-                <head>
-                    <meta charset="utf-8">
-                    <script type="module" src="https://ajax.googleapis.com/ajax/libs/model-viewer/4.0.0/model-viewer.min.js"></script>
-                    <style>
-                        body, html {{ 
-                            margin: 0; padding: 0; width: 100%; height: 100%; 
-                            background: #17191e; overflow: hidden; 
-                        }}
-                        model-viewer {{ 
-                            width: 100%; height: 100%; outline: none; 
-                            --poster-color: transparent;
-                        }}
-                    </style>
-                </head>
-                <body>
-                    <model-viewer 
-                        id="viewer"
-                        src="{file_url}" 
-                        camera-controls 
-                        auto-rotate 
-                        auto-rotate-delay="1000"
-                        shadow-intensity="1.5" 
-                        shadow-softness="0.7"
-                        environment-image="neutral"
-                        camera-orbit="0deg 75deg 105%"
-                        min-camera-orbit="auto auto 5%"
-                        max-camera-orbit="auto auto 500%"
-                        exposure="1.1">
-                    </model-viewer>
-
-                    <script>
-                        const viewer = document.getElementById('viewer');
-
-                        viewer.addEventListener('load', () => {{
-                            const anims = viewer.availableAnimations || [];
-
-                            console.log("[3D] 📦 Всего анимаций в файле: " + anims.length);
-
-                            if (anims.length > 0) {{
-                                console.log("[3D] 📋 Доступные: " + anims.join(', '));
-
-                                // Ищем спокойную стойку (idle, stand, menu) без бега и приседа
-                                let bestAnim = anims.find(name => {{
-                                    const n = name.toLowerCase();
-                                    return (n.includes('idle') || n.includes('stand') || n.includes('menu')) 
-                                           && !n.includes('crouch') && !n.includes('run');
-                                }});
-
-                                // Если идеальной стойки не нашлось — берём первую
-                                if (!bestAnim) {{
-                                    bestAnim = anims[0];
-                                }}
-
-                                viewer.animationName = bestAnim;
-                                viewer.play();
-                                console.log("[3D] ▶ Включена анимация: " + bestAnim);
-                            }} else {{
-                                console.log("[3D] ℹ️ В модели нет запечённых анимаций (показывается статичная поза)");
-                            }}
-
-                            // Скрываем лишние оверлейные пропы (двери, тулганы и т.д.)
-                            const symbols = Object.getOwnPropertySymbols(viewer);
-                            const sceneSymbol = symbols.find(s => s.description === 'scene');
-                            if (sceneSymbol && viewer[sceneSymbol]) {{
-                                const scene = viewer[sceneSymbol];
-                                scene.traverse((node) => {{
-                                    const name = (node.name || '').toLowerCase();
-                                    if (name.includes('door') || name.includes('block') || name.includes('toolgun')) {{
-                                        node.visible = false;
-                                    }}
-                                }});
-                            }}
-                        }});
-                    </script>
-                </body>
-                </html>
-                """
+        html = model_viewer_html(glb_path)
         view = self._ensure_web_view()
         view.setHtml(html, baseUrl=QUrl.fromLocalFile(str(glb_path.parent) + "/"))
         self.preview_stack.setCurrentWidget(view)

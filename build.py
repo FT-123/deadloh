@@ -105,10 +105,10 @@ def build():
     ]
 
     for b in binaries:
-        # Ищем в корне или в tools/
-        candidate = root_dir / b
+        # Ищем в tools/ (каноническое место), затем в корне
+        candidate = root_dir / "tools" / b
         if not candidate.exists():
-            candidate = root_dir / "tools" / b
+            candidate = root_dir / b
 
         if candidate.exists():
             args.append(f"--add-binary={candidate};.")
@@ -117,7 +117,7 @@ def build():
 
     print("\n🚀 Сборка через PyInstaller...")
     PyInstaller.__main__.run(args)
-    print("\n🎉 Готово! Проверь dist/DeadlockModManager.exe")
+    print("\n🎉 Готово! Проверь dist/DeadlockModManager/DeadlockModManager.exe")
 
 
 if __name__ == "__main__":

@@ -1,5 +1,7 @@
 """Интеграционные тесты окна GameBanana: поиск, пагинация, ленивая загрузка, «назад»."""
 
+import time
+
 import pytest
 
 pytest.importorskip("PySide6")  # GUI-тесты пропускаются, если нет PySide6
@@ -50,6 +52,7 @@ def wait_for_load(window: GameBananaWindow, qapp) -> None:
         if not window._popular_loading:
             break
         qapp.processEvents()
+        time.sleep(0.005)  # даём фоновому потоку CPU, иначе цикл его обгоняет
     # финальный дренаж очереди событий на случай, если сигнал ещё в очереди
     for _ in range(10):
         qapp.processEvents()
