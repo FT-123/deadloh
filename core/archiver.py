@@ -30,6 +30,8 @@ try:
         BASE_DIR / "UnRAR.exe",
         BASE_DIR / "_internal" / "unrar.exe",
         BASE_DIR / "_internal" / "UnRAR.exe",
+        BASE_DIR / "_internal" / "tools" / "unrar.exe",
+        BASE_DIR / "_internal" / "tools" / "UnRAR.exe",
     ]
     _meipass = getattr(sys, "_MEIPASS", None)
     if _meipass:
