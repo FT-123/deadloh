@@ -1566,10 +1566,17 @@ class DeadlockModManager(QMainWindow):
             self.update_header_status()
 
     def save_config(self):
-        CONFIG_PATH.write_text(
-            json.dumps({"game_path": str(self.game_path) if self.game_path else None}, indent=4),
-            encoding="utf-8",
-        )
+        """Сохраняет game_path, не затирая github_token/release_repo и другие ключи."""
+        data: dict = {}
+        if CONFIG_PATH.exists():
+            try:
+                existing = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+                if isinstance(existing, dict):
+                    data.update(existing)
+            except (OSError, ValueError):
+                pass
+        data["game_path"] = str(self.game_path) if self.game_path else None
+        CONFIG_PATH.write_text(json.dumps(data, indent=4), encoding="utf-8")
 
     def load_config(self):
         if CONFIG_PATH.exists():
