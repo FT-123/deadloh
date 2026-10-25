@@ -1,0 +1,4 @@
+# Батники Windows должны иметь CRLF, иначе cmd.exe ломает блоки if (...).
+.gitattributes text eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf

@@ -3,7 +3,7 @@ chcp 65001 >nul
 setlocal
 cd /d "%~dp0"
 
-rem UTF-8, чтобы русский текст и emoji в выводе Python не падали на cp866.
+rem UTF-8 output for Python (Russian text/emoji).
 set "PYTHONUTF8=1"
 set "PYTHONIOENCODING=utf-8"
 
@@ -18,9 +18,9 @@ set "RC=%ERRORLEVEL%"
 
 echo.
 if not "%RC%"=="0" (
-    echo [ERROR] Сборка завершилась с кодом %RC%.
+    echo [ERROR] Build failed with exit code %RC%.
 ) else (
-    echo [OK] Готово. Zip лежит в папке dist.
+    echo [OK] Done. The zip is in the dist folder.
 )
 pause
 exit /b %RC%
