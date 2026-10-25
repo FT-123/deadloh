@@ -1,9 +1,18 @@
 # core/model_exporter.py
+import hashlib
+import shutil
 import subprocess
 import sys
+import tempfile
+from collections.abc import Iterable
 from pathlib import Path
 
 from .paths import BASE_DIR
+
+# Кеш 3D-моделей живёт в системной temp, а не в staging.
+# Префикс «dmm-vpk-» важен: кнопка «Очистить кеш 3D» ищет именно такие папки.
+MODEL_CACHE_ROOT_NAME = "dmm-vpk-model-cache"
+TEMP_CACHE_GLOB = "dmm-vpk-*"
 
 
 def get_s2v_cli_path() -> Path | None:
@@ -37,6 +46,59 @@ def resolve_gameinfo_path(game_path: Path | None) -> Path | None:
         if p.exists() and p.is_file():
             return p
     return None
+
+
+def model_cache_root() -> Path:
+    """Корень кеша 3D-моделей в системной временной папке."""
+    return Path(tempfile.gettempdir()) / MODEL_CACHE_ROOT_NAME
+
+
+def model_cache_dir(vpk_path: Path) -> Path:
+    """Стабильная папка кеша для конкретного VPK (ключ по пути и mtime).
+
+    Логика та же, что у превью в VPK-редакторе: изменился VPK — изменился ключ,
+    поэтому старый GLB не будет показан для другой версии мода.
+    """
+    vpk_path = Path(vpk_path)
+    try:
+        stamp = vpk_path.stat().st_mtime_ns
+    except OSError:
+        stamp = 0
+    key = hashlib.sha1(f"{vpk_path.resolve()}|{stamp}".encode()).hexdigest()[:20]
+    return model_cache_root() / f"model_{key}"
+
+
+def clear_preview_caches(
+    exclude: Iterable[str | Path] | None = None,
+) -> tuple[int, int]:
+    """Удаляет временные папки ``dmm-vpk-*`` (кеш 3D и превью).
+
+    ``exclude`` — пути, которые трогать нельзя (например, рабочая копия
+    открытого VPK-редактора с несохранёнными заменами).
+
+    Возвращает ``(удалено_папок, освобождено_байт)``. Ошибки отдельных файлов
+    игнорируются: часть кеша может быть занята другим процессом.
+    """
+    root = Path(tempfile.gettempdir())
+    protected = {Path(p).resolve() for p in (exclude or ())}
+    removed = 0
+    freed = 0
+    for entry in list(root.glob(TEMP_CACHE_GLOB)):
+        try:
+            if entry.resolve() in protected:
+                continue
+            if entry.is_dir():
+                freed += sum(f.stat().st_size for f in entry.rglob("*") if f.is_file())
+                shutil.rmtree(entry, ignore_errors=True)
+                if not entry.exists():
+                    removed += 1
+            else:
+                freed += entry.stat().st_size
+                entry.unlink(missing_ok=True)
+                removed += 1
+        except OSError:
+            continue
+    return removed, freed
 
 
 def pick_best_model(glb_files: list[Path]) -> Path | None:
@@ -86,14 +148,19 @@ def pick_best_model(glb_files: list[Path]) -> Path | None:
 
 def export_vpk_model_to_glb(
         vpk_path: Path,
-        output_dir: Path,
+        output_dir: Path | None = None,
         game_path: Path | None = None,
         force_rebuild: bool = False
 ) -> tuple[bool, Path | None, str]:
     """Декомпилирует модель из VPK в совместимый со всеми вьюверами GLB.
 
+    ``output_dir`` оставлен для обратной совместимости. Если он не задан,
+    используется кеш в системной temp (:func:`model_cache_dir`) — папки
+    в staging больше не создаются.
+
     Возвращает: (успех, путь_к_файлу, сообщение)
     """
+    vpk_path = Path(vpk_path)
     cli_path = get_s2v_cli_path()
     if not cli_path:
         return False, None, "Source2Viewer-CLI.exe не найден рядом с приложением!"
@@ -101,18 +168,21 @@ def export_vpk_model_to_glb(
     if not vpk_path.exists():
         return False, None, f"VPK файл не найден: {vpk_path}"
 
-    output_dir.mkdir(parents=True, exist_ok=True)
+    cache_dir = Path(output_dir) if output_dir is not None else model_cache_dir(vpk_path)
+    if force_rebuild:
+        shutil.rmtree(cache_dir, ignore_errors=True)
+    cache_dir.mkdir(parents=True, exist_ok=True)
 
     # 1. Проверяем кеш
     if not force_rebuild:
-        existing = list(output_dir.rglob("*.glb"))
+        existing = list(cache_dir.rglob("*.glb"))
         if existing:
             best = pick_best_model(existing)
             if best and best.stat().st_size > 1024:
                 print(f"[ModelExporter] Найден готовый кеш: {best.name} ({best.stat().st_size} байт)")
                 return True, best, ""
 
-    out_str = str(output_dir.resolve()).rstrip("\\/") + "\\"
+    out_str = str(cache_dir.resolve()).rstrip("\\/") + "\\"
     gi_path = resolve_gameinfo_path(game_path)
 
     # 2. Формируем надёжную команду CLI
@@ -147,14 +217,14 @@ def export_vpk_model_to_glb(
             return False, None, f"Ошибка CLI: {err[:200]}"
 
         # 3. Сканируем результаты
-        found_models = list(output_dir.rglob("*.glb"))
+        found_models = list(cache_dir.rglob("*.glb"))
         if not found_models:
             print("[ModelExporter] В выводе не обнаружено файлов .glb")
             return False, None, "В моде нет 3D-моделей (.vmdl_c)"
 
         print(f"[ModelExporter] Успешно сгенерировано моделей: {len(found_models)}")
         for m in found_models:
-            print(f"  • {m.relative_to(output_dir)} ({m.stat().st_size} байт)")
+            print(f"  • {m.relative_to(cache_dir)} ({m.stat().st_size} байт)")
 
         chosen = pick_best_model(found_models)
         if not chosen:

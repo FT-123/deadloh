@@ -665,3 +665,39 @@ QComboBox#characterFilter QAbstractItemView::item:selected {
     background-color: #3c4043;
     color: #e3e3e3;
 }
+
+/* ── Выпадающее меню инструментов ────────────────────────── */
+
+QPushButton#iconBtn::menu-indicator {
+    image: none;
+    width: 0px;
+}
+
+QMenu#moreMenu {
+    background-color: #1e1f20;
+    border: 1px solid #444746;
+    border-radius: 12px;
+    padding: 6px;
+}
+
+QMenu#moreMenu::item {
+    background: transparent;
+    color: #e3e3e3;
+    padding: 8px 20px;
+    border-radius: 8px;
+}
+
+QMenu#moreMenu::item:selected {
+    background-color: #333537;
+    color: #e3e3e3;
+}
+
+QMenu#moreMenu::item:disabled {
+    color: #5f6368;
+}
+
+QMenu#moreMenu::separator {
+    height: 1px;
+    background-color: #3c3d3f;
+    margin: 6px 10px;
+}

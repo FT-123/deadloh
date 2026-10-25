@@ -2,8 +2,8 @@ import json
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QSize, Qt, QTimer, QThread, QUrl, Signal
-from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut
+from PySide6.QtCore import QSize, Qt, QThread, QTimer, QUrl, Signal
+from PySide6.QtGui import QAction, QDesktopServices, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -15,12 +15,13 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QListWidgetItem,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QStackedLayout,
     QVBoxLayout,
     QWidget,
-    QStackedLayout
 )
 
 from core.archiver import extract_and_stage_archive, stage_vpk_file
@@ -29,7 +30,7 @@ from core.deployer import deploy_active_mods, get_deployed_mods_set
 from core.gameinfo import is_gameinfo_patched, patch_gameinfo_file
 from core.jsonio import write_json_atomic
 from core.locator import detect_deadlock_path
-from core.model_exporter import export_vpk_model_to_glb
+from core.model_exporter import clear_preview_caches, export_vpk_model_to_glb
 from core.paths import APP_DATA_DIR, CONFIG_PATH, STAGING_DIR, ensure_data_dir
 from core.updater import (
     APP_VERSION,
@@ -270,13 +271,13 @@ class ModelPreviewWorker(QThread):
 
     def run(self):
         vpk_path = self.mod_folder / "content.vpk"
-        cache_dir = self.mod_folder / ".preview_cache"
 
         if not vpk_path.exists():
             self.preview_ready.emit(self.folder_name, False, "", "Файл content.vpk не найден")
             return
 
-        ok, glb_path, err = export_vpk_model_to_glb(vpk_path, cache_dir, self.game_path)
+        # Кеш 3D живёт в системной temp (dmm-vpk-*), staging не засоряем.
+        ok, glb_path, err = export_vpk_model_to_glb(vpk_path, game_path=self.game_path)
 
         self.preview_ready.emit(self.folder_name, ok, str(glb_path) if glb_path else "", err)
 
@@ -468,10 +469,10 @@ class DeadlockModManager(QMainWindow):
 
     def start_check_update(self) -> None:
         """Запускает фоновую проверку наличия новой версии."""
-        if self._is_busy():
+        if self._any_worker_running():
             self._show_busy()
             return
-        self.btn_update.setEnabled(False)
+        self.act_update.setEnabled(False)
         self.statusBar().showMessage("⏳ Проверяю обновления…", 0)
         worker = UpdateCheckWorker(self)
         worker.finished.connect(self.on_check_update_finished)
@@ -479,7 +480,7 @@ class DeadlockModManager(QMainWindow):
 
     def on_check_update_finished(self, result: UpdateResult) -> None:
         """Обрабатывает результат проверки обновлений."""
-        self.btn_update.setEnabled(True)
+        self.act_update.setEnabled(True)
         self.statusBar().clearMessage()
         if result.error is not None:
             self._show_update_error(result.error)
@@ -524,7 +525,7 @@ class DeadlockModManager(QMainWindow):
         dest_name = release.asset_name or f"deadlock_{result.latest_version}.zip"
         dest = APP_DATA_DIR / "update" / dest_name
 
-        self.btn_update.setEnabled(False)
+        self.act_update.setEnabled(False)
         if frozen and release.is_zip:
             self.statusBar().showMessage("⏳ Скачиваю обновление…", 0)
             worker = UpdateDownloadWorker(url, dest, self)
@@ -544,7 +545,7 @@ class DeadlockModManager(QMainWindow):
 
     def _on_frozen_install_finished(self, path_str: str, ok: bool, release: ReleaseInfo) -> None:
         """Завершение скачивания для frozen-сборки: маркер + перезапуск."""
-        self.btn_update.setEnabled(True)
+        self.act_update.setEnabled(True)
         self.statusBar().clearMessage()
         if not ok:
             QMessageBox.warning(
@@ -566,7 +567,7 @@ class DeadlockModManager(QMainWindow):
 
     def _on_dev_install_finished(self, path_str: str, ok: bool, release: ReleaseInfo) -> None:
         """Завершение скачивания в dev-режиме (без two-phase установки)."""
-        self.btn_update.setEnabled(True)
+        self.act_update.setEnabled(True)
         self.statusBar().clearMessage()
         if not ok:
             QMessageBox.warning(
@@ -590,6 +591,20 @@ class DeadlockModManager(QMainWindow):
         if not url:
             return
         QDesktopServices.openUrl(QUrl(url))
+
+    def clear_preview_cache(self) -> None:
+        """Удаляет весь кеш 3D-просмотра из системной temp (dmm-vpk-*)."""
+        # Не трогаем рабочую копию открытого VPK-редактора: там могут быть
+        # несохранённые замены ресурсов.
+        exclude: list[Path] = []
+        if self.vpk_editor_window is not None:
+            exclude = self.vpk_editor_window.cache_paths()
+        removed, freed = clear_preview_caches(exclude=exclude)
+        if removed == 0:
+            self.notify("🧹 Кеш 3D уже пуст", 3200)
+            return
+        megabytes = freed / (1024 * 1024)
+        self.notify(f"🧹 Кеш 3D очищен: {removed} папок, {megabytes:.1f} МБ", 4200)
 
     def init_game_path(self):
         self.load_config()
@@ -631,23 +646,6 @@ class DeadlockModManager(QMainWindow):
         title_box.addWidget(self.lbl_path)
         header_row.addLayout(title_box, 1)
 
-        self.btn_check_mods = QPushButton("🔍 Проверить моды")
-        self.btn_check_mods.setObjectName("ghostBtn")
-        self.btn_check_mods.setCursor(Qt.PointingHandCursor)
-        self.btn_check_mods.setToolTip("Проверить моды на поломки моделей через vpkmerge")
-        self.btn_check_mods.clicked.connect(self.start_scan_stale_mods)
-        header_row.addWidget(self.btn_check_mods)
-
-        self.btn_fix_all = QPushButton("🔧 Починить все")
-        self.btn_fix_all.setObjectName("ghostBtn")
-        self.btn_fix_all.setCursor(Qt.PointingHandCursor)
-        self.btn_fix_all.setToolTip(
-            "Починить все сломанные моды через vpkmerge (создаются резервные копии)"
-        )
-        self.btn_fix_all.setEnabled(False)
-        self.btn_fix_all.clicked.connect(self.start_heal_all)
-        header_row.addWidget(self.btn_fix_all)
-
         self.btn_status_patch = QPushButton()
         self.btn_status_patch.setObjectName("stateBtn")
         self.btn_status_patch.setCursor(Qt.PointingHandCursor)
@@ -663,27 +661,55 @@ class DeadlockModManager(QMainWindow):
         self.btn_gb.clicked.connect(self.open_gb_window)
         header_row.addWidget(self.btn_gb)
 
-        self.btn_vpk_edit = QPushButton("🧩 VPK-редактор")
-        self.btn_vpk_edit.setCursor(Qt.PointingHandCursor)
-        self.btn_vpk_edit.setToolTip(
-            "Открыть VPK в отдельном окне: замена ресурсов и звуков"
-        )
-        self.btn_vpk_edit.clicked.connect(self.open_vpk_editor_window)
-        header_row.addWidget(self.btn_vpk_edit)
-
-        self.btn_update = QPushButton("🔄 Обновить")
-        self.btn_update.setObjectName("ghostBtn")
-        self.btn_update.setCursor(Qt.PointingHandCursor)
-        self.btn_update.setToolTip("Проверить наличие новой версии приложения")
-        self.btn_update.clicked.connect(self.start_check_update)
-        header_row.addWidget(self.btn_update)
-
         btn_folder = QPushButton("📁")
         btn_folder.setObjectName("iconBtn")
         btn_folder.setToolTip("Выбрать папку citadel вручную")
         btn_folder.setCursor(Qt.PointingHandCursor)
         btn_folder.clicked.connect(self.manual_select_game_folder)
         header_row.addWidget(btn_folder)
+
+        # Остальные инструменты — в выпадающем меню, чтобы шапка не разрасталась.
+        self.menu_more = QMenu(self)
+        self.menu_more.setObjectName("moreMenu")
+
+        self.act_check_mods = QAction("🔍 Проверить моды", self)
+        self.act_check_mods.setToolTip("Проверить моды на поломки моделей через vpkmerge")
+        self.act_check_mods.triggered.connect(self.start_scan_stale_mods)
+        self.menu_more.addAction(self.act_check_mods)
+
+        self.act_fix_all = QAction("🔧 Починить все", self)
+        self.act_fix_all.setToolTip(
+            "Починить все сломанные моды через vpkmerge (создаются резервные копии)"
+        )
+        self.act_fix_all.setEnabled(False)
+        self.act_fix_all.triggered.connect(self.start_heal_all)
+        self.menu_more.addAction(self.act_fix_all)
+
+        self.act_vpk_edit = QAction("🧩 VPK-редактор", self)
+        self.act_vpk_edit.setToolTip(
+            "Открыть VPK в отдельном окне: замена ресурсов и звуков"
+        )
+        self.act_vpk_edit.triggered.connect(self.open_vpk_editor_window)
+        self.menu_more.addAction(self.act_vpk_edit)
+
+        self.act_update = QAction("🔄 Обновить", self)
+        self.act_update.setToolTip("Проверить наличие новой версии приложения")
+        self.act_update.triggered.connect(self.start_check_update)
+        self.menu_more.addAction(self.act_update)
+
+        self.menu_more.addSeparator()
+
+        self.act_clear_cache = QAction("🧹 Очистить кеш 3D", self)
+        self.act_clear_cache.setToolTip("Удалить весь кеш 3D-просмотра (%TEMP%\\dmm-vpk-*)")
+        self.act_clear_cache.triggered.connect(self.clear_preview_cache)
+        self.menu_more.addAction(self.act_clear_cache)
+
+        self.btn_more = QPushButton("⋯")
+        self.btn_more.setObjectName("iconBtn")
+        self.btn_more.setToolTip("Дополнительные инструменты")
+        self.btn_more.setCursor(Qt.PointingHandCursor)
+        self.btn_more.setMenu(self.menu_more)
+        header_row.addWidget(self.btn_more)
         layout.addWidget(header)
 
         # ── Статистика ────────────────────────────────────────────────────
@@ -847,32 +873,21 @@ class DeadlockModManager(QMainWindow):
         toast = getattr(self, "toast", None)
         if toast is not None:
             toast.reposition()
-        if hasattr(self, "btn_check_mods"):
+        if hasattr(self, "btn_more"):
             self._apply_header_density()
 
     def _apply_header_density(self) -> None:
         """На узком окне оставляет у кнопок только иконки — шапка не ломается."""
         if not all(
             hasattr(self, name)
-            for name in (
-                "btn_check_mods",
-                "btn_fix_all",
-                "btn_gb",
-                "btn_vpk_edit",
-                "btn_update",
-                "btn_status_patch",
-            )
+            for name in ("btn_gb", "btn_status_patch", "btn_more")
         ):
             return
         compact = self.width() < 1040
         if getattr(self, "_compact_header", None) == compact:
             return
         self._compact_header = compact
-        self.btn_check_mods.setText("🔍" if compact else "🔍 Проверить моды")
-        self.btn_fix_all.setText("🔧" if compact else "🔧 Починить все")
         self.btn_gb.setText("🌐" if compact else "🌐 GameBanana")
-        self.btn_vpk_edit.setText("🧩" if compact else "🧩 VPK-редактор")
-        self.btn_update.setText("🔄" if compact else "🔄 Обновить")
         self.update_header_status()
 
 
@@ -1221,8 +1236,8 @@ class DeadlockModManager(QMainWindow):
             self._show_busy()
             return
 
-        self.btn_check_mods.setEnabled(False)
-        self.btn_fix_all.setEnabled(False)
+        self.act_check_mods.setEnabled(False)
+        self.act_fix_all.setEnabled(False)
         self.progress_bar.setVisible(True)
 
         self.scan_worker = ScanStaleWorker(self.game_path)
@@ -1234,7 +1249,7 @@ class DeadlockModManager(QMainWindow):
     def on_scan_finished(self, stale_count: int, errors: list | None = None):
         if self.scan_worker:
             self.scan_worker.wait()
-        self.btn_check_mods.setEnabled(True)
+        self.act_check_mods.setEnabled(True)
         self.progress_bar.setVisible(False)
         self.refresh_list()
 
@@ -1325,12 +1340,12 @@ class DeadlockModManager(QMainWindow):
 
     def _sync_fix_all_button(self) -> None:
         """Включает «Починить все» только когда есть что чинить."""
-        button = getattr(self, "btn_fix_all", None)
-        if button is None:
+        action = getattr(self, "act_fix_all", None)
+        if action is None:
             return
         can_fix = getattr(self, "_stale_count", 0) > 0 and bool(self.game_path)
         if not self._worker_running("heal_all_worker"):
-            button.setEnabled(can_fix)
+            action.setEnabled(can_fix)
 
     def start_heal_all(self):
         """Чинит все сломанные моды подряд в фоновом потоке."""
@@ -1361,8 +1376,8 @@ class DeadlockModManager(QMainWindow):
         if answer != QMessageBox.Yes:
             return
 
-        self.btn_fix_all.setEnabled(False)
-        self.btn_check_mods.setEnabled(False)
+        self.act_fix_all.setEnabled(False)
+        self.act_check_mods.setEnabled(False)
         self.progress_bar.setVisible(True)
         self.progress_bar.setRange(0, len(folders))
         self.progress_bar.setValue(0)
@@ -1384,7 +1399,7 @@ class DeadlockModManager(QMainWindow):
     def on_heal_all_finished(self, healed_count: int, healed: list, errors: list):
         if self.heal_all_worker:
             self.heal_all_worker.wait()
-        self.btn_check_mods.setEnabled(True)
+        self.act_check_mods.setEnabled(True)
         self.progress_bar.setVisible(False)
         self.progress_bar.setRange(0, 100)
 

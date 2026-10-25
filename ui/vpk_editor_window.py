@@ -942,6 +942,15 @@ class VPKEditorWindow(QDialog):
             except Exception:  # noqa: BLE001, S110 — закрытие не должно мешать выходу
                 pass
 
+    def cache_paths(self) -> list[Path]:
+        """Временные папки окна: кеш превью и рабочая копия открытого проекта."""
+        paths = [self._preview_cache]
+        if self._project is not None:
+            workspace = self._project.workspace_path
+            if workspace is not None:
+                paths.append(workspace)
+        return paths
+
     def shutdown(self) -> None:
         """Останавливает фоновые потоки и освобождает рабочую копию и кеш превью."""
         for worker in (
