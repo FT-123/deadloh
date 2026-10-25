@@ -169,3 +169,89 @@ def test_fetch_latest_release_no_assets(monkeypatch):
     assert release.asset_name == ""
     assert release.is_zip is False
     assert release.download_url == "https://github.com/FT-123/deadloh/releases/tag/v2.0"
+
+
+def test_fetch_latest_release_uses_env_token(monkeypatch):
+    import core.updater as _up
+
+    captured = {}
+
+    class FakeResp:
+        def __init__(self):
+            self.headers = {"Content-Length": "0"}
+
+        def read(self):
+            return b'{"tag_name":"2.0","name":"v2.0","html_url":"https://x","assets":[]}'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    def fake_urlopen(request, timeout=15):
+        captured["auth"] = request.get_header("Authorization")
+        return FakeResp()
+
+    monkeypatch.setenv("GITHUB_TOKEN", "secret")
+    monkeypatch.setattr(_up.urllib.request, "urlopen", fake_urlopen)
+
+    _release, error = _up.fetch_latest_release(repo="owner/repo")
+    assert error is None
+    assert captured["auth"] == "Bearer secret"
+
+
+def test_download_asset_uses_env_token_and_writes_file(tmp_path, monkeypatch):
+    import core.updater as _up
+
+    captured = {}
+
+    class FakeResponse:
+        def __init__(self):
+            self._data = b"payload"
+            self.headers = {"Content-Length": str(len(self._data))}
+
+        def read(self, size=65536):
+            chunk, self._data = self._data[:size], self._data[size:]
+            return chunk
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    class FakeOpener:
+        def open(self, request, timeout=None):
+            captured["auth"] = request.get_header("Authorization")
+            return FakeResponse()
+
+    monkeypatch.setenv("GITHUB_TOKEN", "secret")
+    monkeypatch.setattr(
+        _up.urllib.request, "build_opener", lambda *args, **kwargs: FakeOpener()
+    )
+
+    dest = tmp_path / "update.zip"
+    assert _up.download_asset("https://example.invalid/update.zip", dest) is True
+    assert dest.read_bytes() == b"payload"
+    assert captured["auth"] == "Bearer secret"
+
+
+def test_update_helper_script_is_ascii_and_extracts_after_exit(tmp_path):
+    from core.updater import build_update_helper_script
+
+    script = build_update_helper_script(
+        zip_path=tmp_path / "update.zip",
+        install_dir=tmp_path / "app",
+        exe_path=tmp_path / "app" / "DeadlockModManager.exe",
+        pid=1234,
+        marker_path=tmp_path / "pending_update.json",
+        error_path=tmp_path / "update_error.txt",
+    )
+
+    script.encode("ascii")  # helper должен быть ASCII-only для cmd
+    assert 'set "APP_PID=1234"' in script
+    assert "tasklist" in script
+    assert "tar -xf" in script
+    assert "powershell" in script
+    assert "--update-installed" in script

@@ -553,12 +553,18 @@ class DeadlockModManager(QMainWindow):
             )
             return
 
-        install_dir = self._install_dir() or Path("")
-        try:
-            from core.updater import write_pending_update
+        install_dir = Path(sys.executable).resolve().parent
+        from core.updater import (
+            clear_pending_update,
+            launch_update_helper,
+            write_pending_update,
+        )
 
+        try:
             write_pending_update(path_str, install_dir, release.version)
+            launch_update_helper(path_str, install_dir, Path(sys.executable))
         except Exception as exc:  # noqa: BLE001 — не теряем скачанное обновление молча
+            clear_pending_update()
             QMessageBox.warning(self, "Обновление", f"Не удалось подготовить установку: {exc}")
             return
 

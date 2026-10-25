@@ -1,5 +1,4 @@
 import os
-import subprocess
 import sys
 from pathlib import Path
 
@@ -18,82 +17,62 @@ if str(ROOT_DIR) not in sys.path:
 
 
 def _handle_pending_update():
-    """Двухфазная установка: если есть отложенное обновление — извлекаем и перезапускаем.
+    """Проверяет незавершённую установку обновления.
 
-    Вызывается ДО создания GUI (Qt ещё не запущен). Работает только для frozen-сборки.
-    После успешного извлечения перезапускает exe с флагом ``--update-installed`` и
-    завершает текущий процесс. При ошибке пишет update_error.txt и продолжает со
-    старой версией (GUI покажет предупреждение).
+    Работающий exe и загруженные DLL из ``_internal`` нельзя перезаписать,
+    поэтому распаковку делает отдельный helper-процесс уже после выхода
+    приложения. Если маркер всё ещё существует на старте — helper не сработал:
+    сообщаем об этом (тост) и убираем маркер, чтобы не зациклиться.
     """
     if not getattr(sys, "frozen", False):
         return
 
-    import zipfile
-
     from core.paths import APP_DATA_DIR
-    from core.updater import clear_pending_update, read_pending_update
+    from core.updater import (
+        UPDATE_ERROR_HELPER,
+        clear_pending_update,
+        read_pending_update,
+    )
 
-    marker = read_pending_update()
-    if not marker:
+    if read_pending_update() is None:
         return
-
-    zip_path = Path(marker.get("zip", ""))
-    install_dir = Path(marker.get("install_dir", "")).resolve()
-    error_file = APP_DATA_DIR / "update_error.txt"
-
     try:
-        if not zip_path.exists():
-            raise RuntimeError("файл обновления не найден")
-        with zipfile.ZipFile(zip_path, "r") as zf:
-            base_str = str(install_dir)
-            for member in zf.namelist():
-                target = (install_dir / member).resolve()
-                if not (str(target) == base_str or str(target).startswith(base_str + os.sep)):
-                    raise RuntimeError("небезопасный путь в архиве")
-                zf.extract(member, install_dir)
-        clear_pending_update()
-    except Exception as exc:  # noqa: BLE001 — не хотим терять обновление молча
-        try:
-            error_file.write_text(str(exc), encoding="utf-8")
-        except OSError:
-            pass
-        return  # продолжаем со старой версией; GUI покажет ошибку
-
-    new_argv = [sys.executable] + ["--update-installed"] + [a for a in sys.argv[1:] if a != "--update-installed"]
-    try:
-        subprocess.Popen(new_argv, cwd=str(install_dir))
-    except Exception as exc:  # noqa: BLE001 — перезапуск не должен ронять процесс
-        try:
-            error_file.write_text(f"не удалось перезапустить приложение: {exc}", encoding="utf-8")
-        except OSError:
-            pass
-    os._exit(0)
+        (APP_DATA_DIR / "update_error.txt").write_text(UPDATE_ERROR_HELPER, encoding="utf-8")
+    except OSError:
+        pass
+    clear_pending_update()
 
 
 def _show_update_toasts(window):
-    """Показывает тосты после установки обновления (успех / ошибка)."""
+    """Показывает тост о результате установки обновления (успех / ошибка)."""
     from PySide6.QtCore import QTimer
 
-    def _do():
-        if "--update-installed" in sys.argv:
-            window.toast.show_message("✅ Обновление установлено")
-        try:
-            from core.paths import APP_DATA_DIR
+    messages = {
+        "UPDATE_EXTRACT_FAILED": "Не удалось распаковать обновление. Файлы не изменены.",
+        "UPDATE_HELPER_FAILED": "Установка обновления не завершилась. Попробуйте ещё раз.",
+    }
 
-            error_file = APP_DATA_DIR / "update_error.txt"
-            if error_file.exists():
-                msg = ""
-                try:
-                    msg = error_file.read_text(encoding="utf-8").strip()
-                except OSError:
-                    msg = "Неизвестная ошибка при установке обновления."
-                window.toast.show_message(f"⚠️ Ошибка установки обновления:\n{msg}", 6000)
-                try:
-                    error_file.unlink()
-                except OSError:
-                    pass
-        except Exception:  # noqa: BLE001, S110 — тост не должен ронять приложение
-            pass
+    def _do():
+        from core.paths import APP_DATA_DIR
+
+        error_text = ""
+        error_file = APP_DATA_DIR / "update_error.txt"
+        if error_file.exists():
+            try:
+                raw = error_file.read_text(encoding="utf-8").strip()
+            except OSError:
+                raw = ""
+            error_text = messages.get(
+                raw, raw or "Неизвестная ошибка при установке обновления."
+            )
+            try:
+                error_file.unlink()
+            except OSError:
+                pass
+        if error_text:
+            window.toast.show_message(f"⚠️ Ошибка установки обновления:\n{error_text}", 6000)
+        elif "--update-installed" in sys.argv:
+            window.toast.show_message("✅ Обновление установлено")
 
     QTimer.singleShot(300, _do)
 

@@ -19,7 +19,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_PATHS = ("core", "ui", "tests", "main.py", "build.py", "scripts")
+DEFAULT_PATHS = ("core", "ui", "tests", "main.py", "build.py", "build_release.py", "scripts")
 
 
 def _workspace_python() -> str:

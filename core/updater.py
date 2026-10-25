@@ -14,7 +14,10 @@
 
 import json
 import os
+import subprocess
+import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,6 +30,27 @@ GITHUB_RELEASES_API = "https://api.github.com/repos/{repo}/releases/latest"
 GITHUB_TOKEN_ENV = "GITHUB_TOKEN"
 USER_AGENT = f"DeadlockModManager/{APP_VERSION}"
 DOWNLOAD_TIMEOUT_SECONDS = 60
+
+# Имя helper-скрипта, который ставит обновление после выхода приложения.
+UPDATE_HELPER_NAME = "install_update.bat"
+UPDATE_ERROR_EXTRACT = "UPDATE_EXTRACT_FAILED"
+UPDATE_ERROR_HELPER = "UPDATE_HELPER_FAILED"
+
+
+class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Снимает Authorization при редиректе на другой хост (GitHub → CDN).
+
+    Иначе токен приватного репозитория уходил бы на objects.githubusercontent.com.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        new_request = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new_request is not None:
+            old_host = urllib.parse.urlsplit(req.full_url).netloc
+            new_host = urllib.parse.urlsplit(newurl).netloc
+            if old_host != new_host:
+                new_request.remove_header("Authorization")
+        return new_request
 
 
 @dataclass(frozen=True)
@@ -126,6 +150,7 @@ def fetch_latest_release(repo: str | None = None, token: str | None = None):
     Возвращает ``(ReleaseInfo | None, ошибка_строка | None)``. Если релизов нет
     или API недоступен — ``None`` и текст ошибки для пользователя.
     """
+    token = token or _read_token()
     url = GITHUB_RELEASES_API.format(repo=repo or _read_repo())
     headers = {
         "Accept": "application/vnd.github+json",
@@ -237,21 +262,31 @@ def clear_pending_update() -> None:
             pass
 
 
-def download_asset(url: str, dest: Path, progress_callback=None) -> bool:
-    """Скачивает ``url`` в ``dest`` (атомарно через .tmp). Возвращает True при успехе."""
+def download_asset(
+    url: str,
+    dest: Path,
+    progress_callback=None,
+    token: str | None = None,
+) -> bool:
+    """Скачивает ``url`` в ``dest`` (атомарно через .tmp). Возвращает True при успехе.
+
+    Для приватного репозитория токен берётся из окружения/конфига и
+    добавляется в запрос; при редиректе на CDN заголовок снимается.
+    """
     dest = Path(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_name(dest.name + ".tmp")
-    request = urllib.request.Request(
-        url,
-        headers={
-            "Accept": "*/*",
-            "User-Agent": USER_AGENT,
-        },
-        method="GET",
-    )
+    headers = {
+        "Accept": "*/*",
+        "User-Agent": USER_AGENT,
+    }
+    token = token or _read_token()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    request = urllib.request.Request(url, headers=headers, method="GET")
+    opener = urllib.request.build_opener(_SafeRedirectHandler)
     try:
-        with urllib.request.urlopen(request, timeout=DOWNLOAD_TIMEOUT_SECONDS) as response:
+        with opener.open(request, timeout=DOWNLOAD_TIMEOUT_SECONDS) as response:
             total = 0
             headers = getattr(response, "headers", None)
             if headers is not None:
@@ -275,3 +310,106 @@ def download_asset(url: str, dest: Path, progress_callback=None) -> bool:
 
     os.replace(tmp, dest)
     return True
+
+
+# ── Helper-установка (Windows) ─────────────────────────────────────────────
+#
+# Работающий exe и загруженные DLL из _internal нельзя перезаписать, поэтому
+# установку делает отдельный .bat: он ждёт выхода приложения, распаковывает
+# zip через tar.exe и запускает новую версию.
+
+def build_update_helper_script(
+    *,
+    zip_path: str | Path,
+    install_dir: str | Path,
+    exe_path: str | Path,
+    pid: int,
+    marker_path: str | Path | None = None,
+    error_path: str | Path | None = None,
+) -> str:
+    """Собирает ASCII-only .bat для установки обновления после выхода приложения."""
+    if marker_path is None:
+        marker_path = _pending_marker_path()
+    if error_path is None:
+        from .paths import APP_DATA_DIR
+
+        error_path = APP_DATA_DIR / "update_error.txt"
+    lines = [
+        "@echo off",
+        "setlocal",
+        f'set "APP_PID={int(pid)}"',
+        f'set "ZIP_PATH={Path(zip_path)}"',
+        f'set "INSTALL_DIR={Path(install_dir)}"',
+        f'set "APP_EXE={Path(exe_path)}"',
+        f'set "MARKER={Path(marker_path)}"',
+        f'set "ERROR_FILE={Path(error_path)}"',
+        "",
+        ":wait",
+        '>nul 2>&1 tasklist /FI "PID eq %APP_PID%" | find "%APP_PID%"',
+        "if not errorlevel 1 (",
+        "    >nul ping -n 2 127.0.0.1",
+        "    goto wait",
+        ")",
+        ">nul ping -n 2 127.0.0.1",
+        'if exist "%ERROR_FILE%" del "%ERROR_FILE%" >nul 2>&1',
+        'tar -xf "%ZIP_PATH%" -C "%INSTALL_DIR%"',
+        "if errorlevel 1 (",
+        (
+            "    powershell -NoProfile -ExecutionPolicy Bypass -Command \"Expand-Archive "
+            "-LiteralPath '%ZIP_PATH%' -DestinationPath '%INSTALL_DIR%' -Force\""
+        ),
+        ")",
+        "if errorlevel 1 (",
+        f'    >"%ERROR_FILE%" echo {UPDATE_ERROR_EXTRACT}',
+        ") else (",
+        '    del "%ZIP_PATH%" >nul 2>&1',
+        ")",
+        'if exist "%MARKER%" del "%MARKER%" >nul 2>&1',
+        'start "" "%APP_EXE%" --update-installed',
+        '(goto) 2>nul & del "%~f0"',
+        "",
+    ]
+    return "\r\n".join(lines)
+
+
+def launch_update_helper(
+    zip_path: str | Path,
+    install_dir: str | Path,
+    exe_path: str | Path,
+    *,
+    marker_path: str | Path | None = None,
+    error_path: str | Path | None = None,
+) -> Path:
+    """Запускает helper, который поставит обновление после выхода текущего процесса."""
+    if sys.platform != "win32":
+        raise OSError("Автоустановка обновлений поддерживается только на Windows")
+    if marker_path is None:
+        marker_path = _pending_marker_path()
+    if error_path is None:
+        from .paths import APP_DATA_DIR
+
+        error_path = APP_DATA_DIR / "update_error.txt"
+
+    helper = Path(marker_path).parent / UPDATE_HELPER_NAME
+    helper.parent.mkdir(parents=True, exist_ok=True)
+    script = build_update_helper_script(
+        zip_path=zip_path,
+        install_dir=install_dir,
+        exe_path=exe_path,
+        pid=os.getpid(),
+        marker_path=marker_path,
+        error_path=error_path,
+    )
+    helper.write_text(script, encoding="ascii", errors="replace")
+
+    flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+    subprocess.Popen(
+        ["cmd.exe", "/c", str(helper)],
+        creationflags=flags,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        cwd=str(helper.parent),
+        close_fds=True,
+    )
+    return helper
