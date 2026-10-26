@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 # Версия текущего сборки. Поднимайте при каждом релизе (соответствует git-тегу / GitHub Release).
-APP_VERSION = "1.2"
+APP_VERSION = "1.3"
 
 DEFAULT_REPO = "FT-123/deadloh"
 GITHUB_RELEASES_API = "https://api.github.com/repos/{repo}/releases/latest"
